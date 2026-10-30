@@ -1039,12 +1039,21 @@ select_action() {
   text+=$'\n\n== PROXIMO PASSO ==\n'
   case $impact in
     menu) text+="Feche esta tela para abrir o submenu." ;;
-    *) text+="Feche esta tela e confirme 'Continuar' para prosseguir." ;;
+    leitura) text+="Feche esta tela para executar a consulta. Nenhuma alteracao sera feita." ;;
+    interativo) text+="Feche esta tela para abrir a sessao interativa." ;;
+    modifica) text+="Feche esta tela e confirme 'Continuar' para informar os parametros." ;;
+    destrutivo) text+="Feche esta tela e confirme 'Continuar' para revisar os comandos; depois digite SIM." ;;
+    *) text+="Feche esta tela para prosseguir." ;;
   esac
   show_text "Detalhes - $title" "$text" || return 1
   case $impact in
-    menu) : ;;
-    *) ui_yesno "Continuar" "Deseja continuar com esta acao? Nada foi executado ainda." || return 1 ;;
+    menu|leitura|interativo|info) : ;;
+    modifica)
+      ui_yesno "Confirmar alteracao" "Esta acao vai modificar o sistema. Deseja abrir a configuracao?" || return 1
+      ;;
+    destrutivo)
+      ui_yesno "Confirmar risco" "Esta acao e destrutiva e pode remover dados ou interromper servicos. Deseja prosseguir para a revisao dos comandos?" || return 1
+      ;;
   esac
   printf '%s' "$tag"
 }
@@ -3020,23 +3029,6 @@ swap_toggle() {
   ui_ok "Swap atualizado" "$dev: $action concluido."
 }
 
-swap_menu() {
-  local c
-  while :; do
-    c=$(select_action "Swap" "Consultar e ativar memoria de troca. Cada opcao abre detalhes." \
-      1 "Consultar uso do swap (somente leitura)" \
-      2 "Ativar dispositivo swap (modifica o sistema)" \
-      3 "! Desativar dispositivo swap (destrutivo)" \
-      0 "Voltar") || return 0
-    case $c in
-      1) swap_status ;;
-      2) swap_toggle on ;;
-      3) swap_toggle off ;;
-      0) return 0 ;;
-    esac
-  done
-}
-
 storage_root_menu() {
   local c
   while :; do
@@ -3349,7 +3341,7 @@ help_text() {
     "  Requer root, whiptail/newt, ssh, tmux e sudo para o modulo batch." \
     "" \
     "LEGENDA DAS ACOES" \
-    "  Menus de area apenas navegam. Acoes internas abrem detalhes e pedem confirmacao." \
+    "  Menus de area apenas navegam. Consultas abrem detalhes e leem; escritas pedem confirmacao." \
     "  As areas usam submenus por Consultar, Criar/Alterar e Remover quando aplicavel." \
     "  [detalhes]            toda acao abre uma tela com o que sera feito, comandos e riscos." \
     "  !                     destaque visual para acao de risco/destrutiva." \
@@ -4771,31 +4763,6 @@ audit_menu() {
   done
 }
 
-lvm_menu() {
-  local c
-  while :; do
-    c=$(select_action "LVM e File Systems" "Escolha a tarefa. Cada opcao abre detalhes e mostra o impacto." \
-      1 "Consultar volumes e filesystems (somente leitura)" \
-      2 "Criar volume logico (modifica o sistema)" \
-      3 "Ampliar volume logico e filesystem (modifica o sistema)" \
-      4 "! Formatar volume logico (destrutivo)" \
-      5 "Montar filesystem e gravar no fstab (modifica o sistema)" \
-      6 "! Desmontar filesystem e remover do fstab (destrutivo)" \
-      7 "! Excluir volume logico (destrutivo)" \
-      0 "Voltar") || return 0
-    case $c in
-      1) lvm_overview ;;
-      2) create_lv ;;
-      3) extend_lv ;;
-      4) create_fs_lv ;;
-      5) mount_fs ;;
-      6) unmount_fs ;;
-      7) delete_lv ;;
-      0) return 0 ;;
-    esac
-  done
-}
-
 network_menu() {
   local c
   while :; do
@@ -4842,23 +4809,6 @@ network_config_menu() {
       2) configure_network heartbeat ;;
       3) configure_dhcp ;;
       4) configure_hostname ;;
-      0) return 0 ;;
-    esac
-  done
-}
-
-storage_menu() {
-  local c
-  while :; do
-    c=$(select_action "Discos e barramento" "Consultas e reescaneamento. Cada opcao abre detalhes antes de executar." \
-      1 "Reescanear barramento SCSI/FC (modifica o sistema)" \
-      2 "Consultar discos e particoes (somente leitura)" \
-      3 "Consultar multipath e HBAs (somente leitura)" \
-      0 "Voltar") || return 0
-    case $c in
-      1) rescan_storage ;;
-      2) list_disks ;;
-      3) storage_health ;;
       0) return 0 ;;
     esac
   done
