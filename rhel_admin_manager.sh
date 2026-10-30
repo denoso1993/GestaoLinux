@@ -248,11 +248,742 @@ action_command_hint() {
   esac
 }
 
+action_guidance() {
+  local item=$1
+  case $item in
+    "Consultar volumes"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  pvs; vgs; lvs; df -hT" \
+        "Pre-requisitos:" \
+        "  lvm2 instalado; leitura permitida para root." \
+        "Resultado esperado:" \
+        "  Lista de PVs, VGs, LVs e uso dos filesystems." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Criar volume logico"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  lvcreate -y -n dados -L 50G vg_data" \
+        "  mkfs.xfs -f /dev/vg_data/dados" \
+        "Pre-requisitos:" \
+        "  VG existente com espaco livre; nome de LV inexistente." \
+        "Resultado esperado:" \
+        "  Novo LV em /dev/<vg>/<lv>, opcionalmente formatado." \
+        "Como reverter:" \
+        "  lvremove -f /dev/<vg>/<lv> (remove o LV e seus dados)."
+      ;;
+    "Ampliar volume logico"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  lvextend -L +10G /dev/vg_data/dados" \
+        "  xfs_growfs /dados  (XFS montado)  ou  resize2fs /dev/vg_data/dados (ext4)" \
+        "Pre-requisitos:" \
+        "  Espaco livre no VG; para XFS, filesystem montado." \
+        "Resultado esperado:" \
+        "  LV maior e filesystem expandido online." \
+        "Como reverter:" \
+        "  XFS e ext4 nao sao reduzidos por este painel; planeje o tamanho."
+      ;;
+    "Formatar volume logico"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  mkfs.xfs -f /dev/vg_data/dados" \
+        "Pre-requisitos:" \
+        "  LV desmontado e fora de swap; backup dos dados." \
+        "Resultado esperado:" \
+        "  Filesystem novo; todo o conteudo anterior e apagado." \
+        "Como reverter:" \
+        "  Somente por restauracao de backup; nao ha rollback automatico."
+      ;;
+    "Montar filesystem"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  mount /dev/vg_data/dados /dados" \
+        "  echo 'UUID=<uuid> /dados xfs defaults 0 0' >> /etc/fstab" \
+        "Pre-requisitos:" \
+        "  Filesystem existente; ponto de montagem vazio; UUID disponivel." \
+        "Resultado esperado:" \
+        "  FS montado agora e persistente apos reboot." \
+        "Como reverter:" \
+        "  umount /dados e remover a linha do /etc/fstab (backup e criado)."
+      ;;
+    "Desmontar filesystem"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  umount /dados" \
+        "  remover a linha correspondente do /etc/fstab" \
+        "Pre-requisitos:" \
+        "  Nenhum processo usando o ponto de montagem." \
+        "Resultado esperado:" \
+        "  FS desmontado e entrada removida do fstab." \
+        "Como reverter:" \
+        "  mount /dev/<vg>/<lv> /dados e recriar a entrada no fstab."
+      ;;
+    "Excluir volume logico"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  lvremove -f /dev/vg_data/dados" \
+        "Pre-requisitos:" \
+        "  LV desmontado e fora de swap; backup validado." \
+        "Resultado esperado:" \
+        "  LV removido e espaco devolvido ao VG." \
+        "Como reverter:" \
+        "  Recriar o LV e restaurar o backup; nao ha rollback automatico."
+      ;;
+    "Consultar interfaces"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  ip -o link show; ip -4 -o addr show; nmcli device status" \
+        "Pre-requisitos:" \
+        "  iproute e, quando aplicavel, NetworkManager." \
+        "Resultado esperado:" \
+        "  Interfaces, estado do link, IPv4 e perfis nmcli." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Alterar IPv4"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  IP 10.0.0.10/24, gateway 10.0.0.1, DNS 10.0.0.53" \
+        "  nmcli connection modify eth0 ipv4.method manual ipv4.addresses 10.0.0.10/24 ..." \
+        "Pre-requisitos:" \
+        "  Console/IPMI disponivel; backup do ifcfg/perfil; janela de manutencao." \
+        "Resultado esperado:" \
+        "  Interface com IPv4 estatico, gateway e DNS configurados." \
+        "Como reverter:" \
+        "  Restaurar backup ou executar a opcao Alterar para DHCP."
+      ;;
+    "Configurar heartbeat"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  IP 10.239.131.30/24, sem gateway e sem DNS." \
+        "  nmcli connection modify eth1 ipv4.method manual ipv4.addresses 10.239.131.30/24 ipv4.never-default yes" \
+        "Pre-requisitos:" \
+        "  Interface dedicada; IP exclusivo; console/IPMI." \
+        "Resultado esperado:" \
+        "  Interface de heartbeat isolada, sem rota default." \
+        "Como reverter:" \
+        "  Restaurar backup do perfil/ifcfg ou alterar para DHCP."
+      ;;
+    "Alterar para DHCP"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  nmcli connection modify eth0 ipv4.method auto ipv4.addresses '' ipv4.gateway '' ipv4.dns ''" \
+        "Pre-requisitos:" \
+        "  Servidor DHCP alcancavel; console/IPMI." \
+        "Resultado esperado:" \
+        "  Interface volta a obter IPv4 automaticamente." \
+        "Como reverter:" \
+        "  Reaplicar IPv4 estatico usando o backup ou os dados anteriores."
+      ;;
+    "Definir hostname"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  hostnamectl set-hostname dboa2palbr009-priv.dcbr01.corp" \
+        "  /etc/hosts: 10.239.131.30 dboa2palbr009-priv.dcbr01.corp dboa2palbr009-priv" \
+        "Pre-requisitos:" \
+        "  FQDN valido; IP opcional para /etc/hosts." \
+        "Resultado esperado:" \
+        "  Hostname ativo e persistente; /etc/hosts atualizado." \
+        "Como reverter:" \
+        "  Restaurar /etc/hosts e /etc/sysconfig/network ou usar hostnamectl novamente."
+      ;;
+    "Consultar usuarios"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  getent passwd; getent group; who; last" \
+        "Pre-requisitos:" \
+        "  Acesso root; NSS local ou corporativo disponivel." \
+        "Resultado esperado:" \
+        "  Usuarios, UID, GID primario, grupos e logins." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Consultar grupos"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  getent group" \
+        "Pre-requisitos:" \
+        "  Acesso root; NSS disponivel." \
+        "Resultado esperado:" \
+        "  Grupos, GIDs e membros." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Criar usuario"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  useradd -m -s /bin/bash -G wheel joao" \
+        "Pre-requisitos:" \
+        "  Nome inexistente; grupos existentes; shell valido." \
+        "Resultado esperado:" \
+        "  Usuario criado; senha deve ser definida em seguida." \
+        "Como reverter:" \
+        "  userdel -r joao (remove home e mail spool)."
+      ;;
+    "Definir senha"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  passwd joao" \
+        "Pre-requisitos:" \
+        "  Usuario existente; terminal interativo." \
+        "Resultado esperado:" \
+        "  Senha alterada; a senha nao e registrada no log." \
+        "Como reverter:" \
+        "  Nao ha como recuperar a senha anterior; redefina com passwd."
+      ;;
+    "Forcar troca de senha"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  chage -d 0 joao" \
+        "Pre-requisitos:" \
+        "  Usuario existente, nao-root." \
+        "Resultado esperado:" \
+        "  Troca obrigatoria no proximo login." \
+        "Como reverter:" \
+        "  chage -d $(date +%Y-%m-%d) joao"
+      ;;
+    "Adicionar usuario a grupo"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  usermod -aG oinstall oracle" \
+        "Pre-requisitos:" \
+        "  Usuario e grupo existentes; grupos privilegiados exigem confirmacao extra." \
+        "Resultado esperado:" \
+        "  Usuario no grupo apos novo login." \
+        "Como reverter:" \
+        "  gpasswd -d oracle oinstall"
+      ;;
+    "Bloquear ou desbloquear"*|"Bloquear conta"*|"Desbloquear conta"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  passwd -l joao  (bloquear)  /  passwd -u joao (desbloquear)" \
+        "Pre-requisitos:" \
+        "  Usuario existente, nao-root." \
+        "Resultado esperado:" \
+        "  Conta bloqueada ou desbloqueada." \
+        "Como reverter:" \
+        "  Executar a acao oposta."
+      ;;
+    "Criar grupo"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  groupadd oinstall" \
+        "Pre-requisitos:" \
+        "  Nome de grupo inexistente." \
+        "Resultado esperado:" \
+        "  Grupo criado com GID automatico." \
+        "Como reverter:" \
+        "  groupdel oinstall"
+      ;;
+    "Excluir usuario"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  userdel -r joao" \
+        "Pre-requisitos:" \
+        "  Usuario sem processos; backup do home; nao-root." \
+        "Resultado esperado:" \
+        "  Conta, home e mail spool removidos." \
+        "Como reverter:" \
+        "  Recriar usuario e restaurar backup do home."
+      ;;
+    "Excluir grupo"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  groupdel oinstall" \
+        "Pre-requisitos:" \
+        "  Grupo nao-sistema e sem usuarios com ele como grupo primario." \
+        "Resultado esperado:" \
+        "  Grupo removido." \
+        "Como reverter:" \
+        "  groupadd oinstall"
+      ;;
+    "Consultar servicos"*|"Consultar cron"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  systemctl --failed; systemctl list-timers; crontab -l" \
+        "Pre-requisitos:" \
+        "  Acesso root; systemd ou SysV conforme a versao." \
+        "Resultado esperado:" \
+        "  Estado dos servicos, falhas, timers e cron." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Gerenciar um servico"*|"Abrir gerenciamento de servico"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  systemctl restart sshd" \
+        "Pre-requisitos:" \
+        "  Servico existente; console/IPMI para servicos de rede." \
+        "Resultado esperado:" \
+        "  Servico iniciado, parado, reiniciado ou habilitado." \
+        "Como reverter:" \
+        "  Executar a acao oposta (start/stop, enable/disable)."
+      ;;
+    "Encerrar processo"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  kill -TERM 12345  /  kill -KILL 12345" \
+        "Pre-requisitos:" \
+        "  PID existente e diferente de 1." \
+        "Resultado esperado:" \
+        "  Processo encerrado ou forcado." \
+        "Como reverter:" \
+        "  Nao ha rollback; reinicie o servico/processo se necessario."
+      ;;
+    "Consultar repositorios"*|"Consultar atualizacoes"*|"Consultar historico"*|"Buscar pacote"*|"Consultar informacoes"*|"Consultar Subscription"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  dnf repolist; dnf check-update; dnf history; dnf search nginx" \
+        "Pre-requisitos:" \
+        "  Repositorios configurados e rede disponivel." \
+        "Resultado esperado:" \
+        "  Dados de repositorios, atualizacoes, historico ou pacote." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Instalar pacote"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  dnf -y install nginx" \
+        "Pre-requisitos:" \
+        "  Repositorio com o pacote; espaco em disco." \
+        "Resultado esperado:" \
+        "  Pacote instalado e dependencias resolvidas." \
+        "Como reverter:" \
+        "  dnf -y remove nginx (configuracoes podem permanecer)."
+      ;;
+    "Remover pacote"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  dnf -y remove nginx" \
+        "Pre-requisitos:" \
+        "  Confirmacao SIM; avaliar dependencias e servicos." \
+        "Resultado esperado:" \
+        "  Pacote removido; dependencias podem ser removidas." \
+        "Como reverter:" \
+        "  Reinstalar o pacote; configuracoes podem ter sido perdidas."
+      ;;
+    "Atualizar todos (modifica o sistema"*|"Aplicar atualizacoes de seguranca (modifica o sistema"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  dnf -y update  /  dnf -y update --security" \
+        "Pre-requisitos:" \
+        "  Janela de manutencao; backup/snapshot; repositorios ativos." \
+        "Resultado esperado:" \
+        "  Pacotes atualizados; kernel novo pode exigir reboot." \
+        "Como reverter:" \
+        "  Restaurar snapshot/backup; nao ha rollback automatico de pacotes."
+      ;;
+    "Consultar firewall"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  firewall-cmd --state; firewall-cmd --get-active-zones; firewall-cmd --list-all" \
+        "Pre-requisitos:" \
+        "  firewalld ou iptables instalado." \
+        "Resultado esperado:" \
+        "  Zonas, servicos, portas e regras ativas." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Abrir opcoes de firewall"*|"Alterar firewall"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  firewall-cmd --permanent --add-port=8080/tcp; firewall-cmd --reload" \
+        "Pre-requisitos:" \
+        "  firewalld ativo; console/IPMI; revisar impacto na porta 22." \
+        "Resultado esperado:" \
+        "  Regra permanente aplicada imediatamente." \
+        "Como reverter:" \
+        "  Remover a mesma porta/servico com --permanent e executar --reload."
+      ;;
+    "Consultar SELinux"*|"Consultar negacoes"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  sestatus; getenforce; ausearch -m AVC,USER_AVC -ts recent" \
+        "Pre-requisitos:" \
+        "  SELinux e auditd instalados." \
+        "Resultado esperado:" \
+        "  Modo atual e negacoes recentes." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Abrir opcoes do SELinux"*|"Alterar modo do SELinux"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  setenforce 0; sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config" \
+        "Pre-requisitos:" \
+        "  Console/IPMI; backup de /etc/selinux/config; reboot para Disabled." \
+        "Resultado esperado:" \
+        "  Modo alterado em runtime e persistido." \
+        "Como reverter:" \
+        "  setenforce 1 e restaurar SELINUX=enforcing no arquivo."
+      ;;
+    "Alterar booleano"*|"Ativar booleano"*|"Desativar booleano"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  setsebool -P httpd_can_network_connect on" \
+        "Pre-requisitos:" \
+        "  Booleano existente; revisar impacto no servico." \
+        "Resultado esperado:" \
+        "  Booleano persistente apos reboot." \
+        "Como reverter:" \
+        "  setsebool -P <booleano> off"
+      ;;
+    "Auditar configuracao do SSH"*|"Testar configuracao do SSH"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  sshd -T; sshd -t; ss -tlnp" \
+        "Pre-requisitos:" \
+        "  openssh-server instalado." \
+        "Resultado esperado:" \
+        "  Configuracao efetiva e validacao de sintaxe." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta/teste sem alteracao."
+      ;;
+    "Consultar data"*|"Consultar NTP"*|"Consultar sysctl"*|"Consultar boot"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  date; timedatectl; chronyc tracking; sysctl net.ipv4.ip_forward; uname -r" \
+        "Pre-requisitos:" \
+        "  Acesso root; ferramentas do modulo instaladas." \
+        "Resultado esperado:" \
+        "  Estado atual de hora, NTP, sysctl ou boot." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Alterar timezone"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  timedatectl set-timezone America/Sao_Paulo" \
+        "Pre-requisitos:" \
+        "  Timezone valido em /usr/share/zoneinfo." \
+        "Resultado esperado:" \
+        "  Horario local e servicos usando o novo timezone." \
+        "Como reverter:" \
+        "  timedatectl set-timezone <timezone-anterior>"
+      ;;
+    "Abrir opcoes de NTP"*|"Habilitar sincronizacao NTP"*|"Desabilitar sincronizacao NTP"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  timedatectl set-ntp true  /  timedatectl set-ntp false" \
+        "Pre-requisitos:" \
+        "  chronyd ou ntpd instalado; acesso aos servidores de tempo." \
+        "Resultado esperado:" \
+        "  Sincronizacao habilitada ou desabilitada." \
+        "Como reverter:" \
+        "  Executar a acao oposta."
+      ;;
+    "Aplicar sysctl"*|"Aplicar temporariamente"*|"Aplicar permanentemente"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  sysctl -w net.ipv4.ip_forward=1" \
+        "  persistente: /etc/sysctl.d/99-rhel-admin.conf" \
+        "Pre-requisitos:" \
+        "  Chave sysctl existente; revisar impacto em rede/kernel." \
+        "Resultado esperado:" \
+        "  Valor aplicado em runtime ou persistido." \
+        "Como reverter:" \
+        "  Reaplicar o valor anterior; backup do arquivo e criado."
+      ;;
+    "Reiniciar servidor"*|"Desligar servidor"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  shutdown -r now  /  shutdown -h now" \
+        "Pre-requisitos:" \
+        "  Janela de manutencao; console/IPMI; servicos preparados." \
+        "Resultado esperado:" \
+        "  Servidor reiniciado ou desligado." \
+        "Como reverter:" \
+        "  Cancelar shutdown antes do prazo com shutdown -c."
+      ;;
+    "Cancelar shutdown"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  shutdown -c" \
+        "Pre-requisitos:" \
+        "  Shutdown previamente agendado." \
+        "Resultado esperado:" \
+        "  Agendamento cancelado." \
+        "Como reverter:" \
+        "  Reagendar o shutdown se necessario."
+      ;;
+    "Consultar swap"*|"Ativar dispositivo swap"*|"Desativar dispositivo swap"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  cat /proc/swaps; swapon /dev/vg/swap  /  swapoff /dev/vg/swap" \
+        "Pre-requisitos:" \
+        "  Dispositivo swap valido; memoria disponivel ao desativar." \
+        "Resultado esperado:" \
+        "  Swap ativo ou desativado." \
+        "Como reverter:" \
+        "  Executar a acao oposta."
+      ;;
+    "Reescanear"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  rescan-scsi-bus.sh -l -w  ou  echo '- - -' > /sys/class/scsi_host/host0/scan" \
+        "Pre-requisitos:" \
+        "  Acesso root; sg3_utils opcional; validar multipath depois." \
+        "Resultado esperado:" \
+        "  Novos discos/LUNs reconhecidos sem reboot." \
+        "Como reverter:" \
+        "  Nao se aplica: nao remove dispositivos."
+      ;;
+    "Consultar discos"*|"Consultar multipath"*|"Uso de filesystems"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  lsblk; fdisk -l; multipath -ll; df -hT" \
+        "Pre-requisitos:" \
+        "  Acesso root; ferramentas de disco/multipath." \
+        "Resultado esperado:" \
+        "  Discos, LUNs, HBAs e uso de filesystems." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Consultar logins"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  getent passwd; getent group; who; last" \
+        "Pre-requisitos:" \
+        "  Acesso root; NSS local/corporativo." \
+        "Resultado esperado:" \
+        "  Usuarios, UID, GID primario, grupos e logins." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Atualizar todos os hosts"*|"Aplicar atualizacoes de seguranca (modifica varios"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  ssh host 'sudo -n dnf -y update'  (ou yum no RHEL 6/7)" \
+        "Pre-requisitos:" \
+        "  Inventario valido; SSH BatchMode; sudo -n; host key conhecida." \
+        "Resultado esperado:" \
+        "  Atualizacao paralela com relatorio por host." \
+        "Como reverter:" \
+        "  Restaurar snapshot/backup; nao ha rollback automatico."
+      ;;
+    "Reiniciar hosts"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  ssh host 'sudo -n shutdown -r +1' " \
+        "Pre-requisitos:" \
+        "  SSH/sudo validos; janela de manutencao; console/IPMI." \
+        "Resultado esperado:" \
+        "  Reboot agendado em todos os hosts; relatorio por host." \
+        "Como reverter:" \
+        "  Cancelar antes do prazo com shutdown -c no host."
+      ;;
+    "Executar comando personalizado"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  comando digitado pelo operador, executado via SSH/sudo -n." \
+        "Pre-requisitos:" \
+        "  Revisao do comando; SSH/sudo; janela de manutencao." \
+        "Resultado esperado:" \
+        "  Saida individual por host e relatorio de sucesso/falha." \
+        "Como reverter:" \
+        "  Depende do comando; nao ha rollback automatico."
+      ;;
+    "Abrir SSH interativo"*|"Anexar sessao"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  ssh -p 22 usuario@host  /  tmux attach -t rhel-admin-batch" \
+        "Pre-requisitos:" \
+        "  Acesso SSH ou sessao TMUX existente." \
+        "Resultado esperado:" \
+        "  Sessao interativa por host ou terminal do lote." \
+        "Como reverter:" \
+        "  Sair da sessao; nada e alterado automaticamente."
+      ;;
+    "Consultar relatorio"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  leitura de status-*.tsv e host-*.log do ultimo lote" \
+        "Pre-requisitos:" \
+        "  Um lote executado anteriormente." \
+        "Resultado esperado:" \
+        "  OK, FALHA SSH, FALHA CMD, TIMEOUT ou SEM STATUS por host." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Criar ou validar inventario"*|"Editar inventario"*|"Testar SSH e sudo"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  inventario: usuario@host:porta, um por linha" \
+        "  teste: ssh -o BatchMode=yes -o StrictHostKeyChecking=yes host true" \
+        "Pre-requisitos:" \
+        "  Arquivo hosts.batch; chaves SSH; host key conhecida; sudo -n." \
+        "Resultado esperado:" \
+        "  Inventario validado ou conectividade/sudo testados." \
+        "Como reverter:" \
+        "  Editar/remover linhas do inventario; nada no host e alterado."
+      ;;
+    "Encerrar sessao TMUX"*|"Encerrar a sessao e iniciar novo lote"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  tmux kill-session -t rhel-admin-batch" \
+        "Pre-requisitos:" \
+        "  Sessao TMUX existente; confirmar jobs em execucao." \
+        "Resultado esperado:" \
+        "  Sessao e jobs encerrados." \
+        "Como reverter:" \
+        "  Iniciar um novo lote; jobs interrompidos nao sao retomados."
+      ;;
+    "Ajuda rapida"*|"Compatibilidade da versao"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  conteudo interno do painel; nao executa comandos de sistema." \
+        "Pre-requisitos:" \
+        "  Nenhum." \
+        "Resultado esperado:" \
+        "  Instrucoes e diferencas por versao do RHEL." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Consultar status ("*|"Consultar logs recentes"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  systemctl status sshd  /  journalctl -u sshd -n 120" \
+        "Pre-requisitos:" \
+        "  Servico existente; systemd (RHEL 7+) ou service/chkconfig (RHEL 6)." \
+        "Resultado esperado:" \
+        "  Estado atual ou ultimas linhas de log do servico." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Iniciar servico"*|"Parar servico"*|"Reiniciar servico"*|"Recarregar configuracao"*|"Habilitar no boot"*|"Desabilitar no boot"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  systemctl restart sshd  /  systemctl enable sshd" \
+        "Pre-requisitos:" \
+        "  Servico existente; console/IPMI para servicos de acesso remoto." \
+        "Resultado esperado:" \
+        "  Servico iniciado, parado, reiniciado ou habilitado." \
+        "Como reverter:" \
+        "  Executar a acao oposta (start/stop, enable/disable)."
+      ;;
+    "SIGTERM"*|"SIGKILL"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  kill -TERM 12345  /  kill -KILL 12345" \
+        "Pre-requisitos:" \
+        "  PID existente e diferente de 1." \
+        "Resultado esperado:" \
+        "  Processo encerrado de forma graciosa ou forcada." \
+        "Como reverter:" \
+        "  Nao ha rollback; reinicie o servico/processo se necessario."
+      ;;
+    "Adicionar servico"*|"Remover servico"*|"Adicionar porta"*|"Remover porta"*|"Recarregar regras"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  firewall-cmd --permanent --add-port=8080/tcp; firewall-cmd --reload" \
+        "Pre-requisitos:" \
+        "  firewalld ativo; console/IPMI; revisar impacto na porta 22." \
+        "Resultado esperado:" \
+        "  Regra permanente aplicada imediatamente." \
+        "Como reverter:" \
+        "  Remover a mesma porta/servico e executar --reload."
+      ;;
+    "Enforcing"*|"Permissive"*|"Disabled"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  setenforce 0; sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config" \
+        "Pre-requisitos:" \
+        "  Console/IPMI; backup de /etc/selinux/config; reboot para Disabled." \
+        "Resultado esperado:" \
+        "  Modo SELinux alterado em runtime e persistido." \
+        "Como reverter:" \
+        "  setenforce 1 e restaurar SELINUX=enforcing."
+      ;;
+    "Anexar a sessao"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  tmux attach -t rhel-admin-batch" \
+        "Pre-requisitos:" \
+        "  Sessao TMUX existente." \
+        "Resultado esperado:" \
+        "  Terminal do lote aberto para acompanhamento." \
+        "Como reverter:" \
+        "  Destacar com Ctrl+b d; nada e alterado."
+      ;;
+    "Consultar ultimas"*|"Consultar erros"*|"Consultar status do arquivo"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  tail -n 200 /var/log/rhel_admin_manager.log" \
+        "  grep -E 'status=(ERRO|FALHA)' /var/log/rhel_admin_manager.log" \
+        "Pre-requisitos:" \
+        "  Arquivo de auditoria existente." \
+        "Resultado esperado:" \
+        "  Historico, erros ou status do log do painel." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Consultar logs"*|"Logs recentes"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  journalctl -n 120 --no-pager; tail -n 120 /var/log/messages" \
+        "Pre-requisitos:" \
+        "  journald ou /var/log/messages disponivel." \
+        "Resultado esperado:" \
+        "  Ultimas mensagens do sistema." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Consultar processos"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  ps -eo pid,user,pcpu,pmem,comm; systemctl --failed; crontab -l" \
+        "Pre-requisitos:" \
+        "  Acesso root; systemd ou SysV conforme a versao." \
+        "Resultado esperado:" \
+        "  Processos, servicos, falhas, cron e timers." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    "Testar conectividade"*|"Consultar rotas"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  ping -c 2 10.0.0.1; echo >/dev/tcp/10.0.0.10/22; ip route; ip neigh" \
+        "Pre-requisitos:" \
+        "  Rede configurada; ICMP/TCP permitidos no destino." \
+        "Resultado esperado:" \
+        "  Resposta de ping/porta e tabelas de rota/ARP." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta/teste somente leitura."
+      ;;
+    "Consultar uso do swap"*)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  cat /proc/swaps; free -m" \
+        "Pre-requisitos:" \
+        "  Nenhum." \
+        "Resultado esperado:" \
+        "  Dispositivos swap ativos e uso de memoria." \
+        "Como reverter:" \
+        "  Nao se aplica: consulta somente leitura."
+      ;;
+    *)
+      printf '%s\n' \
+        "Exemplo pratico:" \
+        "  informe os parametros na proxima tela; o comando exato sera montado e exibido." \
+        "Pre-requisitos:" \
+        "  Acesso root e dependencias do modulo." \
+        "Resultado esperado:" \
+        "  A tela de confirmacao mostra o comando e o impacto antes de executar." \
+        "Como reverter:" \
+        "  Depende da acao; backups e caminhos serao informados."
+      ;;
+  esac
+}
+
 select_action() {
   local title=$1 prompt=$2
   shift 2
   local -a raw=("$@") display=()
-  local i tag item impact hint text
+  local i tag item impact hint text guidance_item guidance
   for ((i = 0; i < ${#raw[@]}; i += 2)); do
     if [[ ${raw[$i]} == 0 ]]; then
       display+=("${raw[$i]}" "${raw[$((i + 1))]}")
@@ -269,6 +1000,7 @@ select_action() {
     fi
   done
   [[ -n $item ]] || item=$tag
+  guidance_item=${item#! }
   case $item in
     *"(destrutivo"*) impact=destrutivo ;;
     *"(modifica"*) impact=modifica ;;
@@ -289,6 +1021,12 @@ select_action() {
     *) text+="Esta opcao abre a proxima tela do painel." ;;
   esac
   text+=$'\n\n== COMANDOS ==\n'"$hint"
+  if [[ $impact == menu ]]; then
+    guidance=$'Exemplo pratico:\n  a proxima tela lista as acoes disponiveis.\nPre-requisitos:\n  nenhum.\nResultado esperado:\n  submenu aberto.\nComo reverter:\n  escolher Voltar.'
+  else
+    guidance=$(action_guidance "$guidance_item")
+  fi
+  text+=$'\n\n== DETALHES ADICIONAIS ==\n'"$guidance"
   text+=$'\n\n== RISCOS E CUIDADOS ==\n'
   case $impact in
     leitura) text+="Classificacao: BAIXO (somente leitura)."$'\n'"Sem risco de escrita: apenas leitura de dados do sistema." ;;
@@ -300,14 +1038,13 @@ select_action() {
   esac
   text+=$'\n\n== PROXIMO PASSO ==\n'
   case $impact in
-    leitura|interativo|menu|info) text+="Feche esta tela para continuar." ;;
-    *) text+="Feche esta tela e confirme 'Continuar' para informar os parametros." ;;
+    menu) text+="Feche esta tela para abrir o submenu." ;;
+    *) text+="Feche esta tela e confirme 'Continuar' para prosseguir." ;;
   esac
   show_text "Detalhes - $title" "$text" || return 1
   case $impact in
-    modifica|destrutivo)
-      ui_yesno "Continuar" "Deseja abrir a configuracao desta acao?" || return 1
-      ;;
+    menu) : ;;
+    *) ui_yesno "Continuar" "Deseja continuar com esta acao? Nada foi executado ainda." || return 1 ;;
   esac
   printf '%s' "$tag"
 }
@@ -2099,33 +2836,72 @@ batch_kill_session() {
 batch_menu() {
   local c
   while :; do
-    c=$(select_action "Operacoes em lote (TMUX)" "Inventario: $BATCH_FILE | SSH local: $BATCH_SSH_USER. Cada opcao abre detalhes." \
+    c=$(show_menu "Operacoes em lote (TMUX)" "Inventario: $BATCH_FILE | SSH local: $BATCH_SSH_USER. Escolha uma categoria." \
+      1 "Inventario da frota (abre menu)" \
+      2 "Executar acoes nos hosts (abre menu)" \
+      3 "Acompanhar ou encerrar lote (abre menu)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) batch_inventory_menu ;;
+      2) batch_exec_menu ;;
+      3) batch_monitor_menu ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+batch_inventory_menu() {
+  local c
+  while :; do
+    c=$(select_action "Inventario da frota" "Arquivo: $BATCH_FILE | SSH local: $BATCH_SSH_USER. Cada opcao mostra comandos e exemplo." \
       1 "Criar ou validar inventario (modifica arquivo local)" \
       2 "Editar inventario (modifica arquivo local)" \
       3 "Testar SSH e sudo (somente leitura)" \
-      4 "! Atualizar todos os hosts (modifica varios hosts)" \
-      5 "! Aplicar atualizacoes de seguranca (modifica varios hosts)" \
-      6 "! Reiniciar hosts (destrutivo em varios hosts)" \
-      7 "Coletar diagnostico (somente leitura)" \
-      8 "! Executar comando personalizado (destrutivo em varios hosts)" \
-      9 "Abrir SSH interativo em TMUX (interativo)" \
-      10 "Anexar sessao TMUX (interativo)" \
-      11 "Consultar relatorio do ultimo lote (somente leitura)" \
-      12 "! Encerrar sessao TMUX (destrutivo)" \
       0 "Voltar") || return 0
     case $c in
       1) batch_inventory ;;
       2) batch_edit_inventory ;;
       3) batch_test_ssh ;;
-      4) batch_patch ;;
-      5) batch_security ;;
-      6) batch_reboot ;;
-      7) batch_diag ;;
-      8) batch_custom ;;
-      9) batch_interactive ;;
-      10) batch_attach ;;
-      11) batch_report ;;
-      12) batch_kill_session ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+batch_exec_menu() {
+  local c
+  while :; do
+    c=$(select_action "Executar acoes nos hosts" "Acoes paralelas via TMUX. Cada opcao mostra impacto, comandos e exemplo." \
+      1 "! Atualizar todos os hosts (modifica varios hosts)" \
+      2 "! Aplicar atualizacoes de seguranca (modifica varios hosts)" \
+      3 "! Reiniciar hosts (destrutivo em varios hosts)" \
+      4 "Coletar diagnostico (somente leitura)" \
+      5 "! Executar comando personalizado (destrutivo em varios hosts)" \
+      6 "Abrir SSH interativo em TMUX (interativo)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) batch_patch ;;
+      2) batch_security ;;
+      3) batch_reboot ;;
+      4) batch_diag ;;
+      5) batch_custom ;;
+      6) batch_interactive ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+batch_monitor_menu() {
+  local c
+  while :; do
+    c=$(select_action "Acompanhar ou encerrar lote" "Sessao: $BATCH_SESSION. Cada opcao mostra comandos e impacto." \
+      1 "Anexar sessao TMUX (interativo)" \
+      2 "Consultar relatorio do ultimo lote (somente leitura)" \
+      3 "! Encerrar sessao TMUX (destrutivo)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) batch_attach ;;
+      2) batch_report ;;
+      3) batch_kill_session ;;
       0) return 0 ;;
     esac
   done
@@ -2264,17 +3040,89 @@ swap_menu() {
 storage_root_menu() {
   local c
   while :; do
-    c=$(show_menu "Armazenamento" "Escolha uma area. Cada item abre um menu." \
-      1 "LVM e filesystems (abre menu)" \
-      2 "Discos e barramento (abre menu)" \
-      3 "Swap (abre menu)" \
-      4 "Uso de filesystems (somente leitura)" \
+    c=$(show_menu "Armazenamento" "Escolha uma categoria: consultar, criar/ampliar, remover ou manutencao." \
+      1 "Consultar armazenamento (abre menu)" \
+      2 "Criar, ampliar ou montar (abre menu)" \
+      3 "Remover ou desmontar (abre menu)" \
+      4 "Manutencao de discos (abre menu)" \
       0 "Voltar") || return 0
     case $c in
-      1) lvm_menu ;;
-      2) storage_menu ;;
-      3) swap_menu ;;
+      1) storage_query_menu ;;
+      2) storage_change_menu ;;
+      3) storage_remove_menu ;;
+      4) storage_maintenance_menu ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+storage_query_menu() {
+  local c
+  while :; do
+    c=$(select_action "Consultar armazenamento" "Somente leitura. Cada opcao abre detalhes, comandos e exemplo." \
+      1 "Consultar LVM e filesystems (somente leitura)" \
+      2 "Consultar discos e particoes (somente leitura)" \
+      3 "Consultar multipath e HBAs (somente leitura)" \
+      4 "Consultar uso de filesystems (somente leitura)" \
+      5 "Consultar swap (somente leitura)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) lvm_overview ;;
+      2) list_disks ;;
+      3) storage_health ;;
       4) filesystem_usage ;;
+      5) swap_status ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+storage_change_menu() {
+  local c
+  while :; do
+    c=$(select_action "Criar, ampliar ou montar" "Cada opcao abre detalhes com impacto, comandos e exemplo." \
+      1 "Criar volume logico (modifica o sistema)" \
+      2 "Ampliar volume logico e filesystem (modifica o sistema)" \
+      3 "Criar filesystem em volume logico (modifica o sistema)" \
+      4 "Montar filesystem e gravar no fstab (modifica o sistema)" \
+      5 "Ativar dispositivo swap (modifica o sistema)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) create_lv ;;
+      2) extend_lv ;;
+      3) create_fs_lv ;;
+      4) mount_fs ;;
+      5) swap_toggle on ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+storage_remove_menu() {
+  local c
+  while :; do
+    c=$(select_action "Remover ou desmontar" "Acoes destrutivas. Cada opcao mostra riscos, comandos e exemplo." \
+      1 "! Desmontar filesystem e remover do fstab (destrutivo)" \
+      2 "! Excluir volume logico (destrutivo)" \
+      3 "! Desativar dispositivo swap (destrutivo)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) unmount_fs ;;
+      2) delete_lv ;;
+      3) swap_toggle off ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+storage_maintenance_menu() {
+  local c
+  while :; do
+    c=$(select_action "Manutencao de discos" "Reescaneamento de barramento. Cada opcao mostra comandos e impacto." \
+      1 "Reescanear barramento SCSI/FC (modifica o sistema)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) rescan_storage ;;
       0) return 0 ;;
     esac
   done
@@ -2502,6 +3350,7 @@ help_text() {
     "" \
     "LEGENDA DAS ACOES" \
     "  Menus de area apenas navegam. Acoes internas abrem detalhes e pedem confirmacao." \
+    "  As areas usam submenus por Consultar, Criar/Alterar e Remover quando aplicavel." \
     "  [detalhes]            toda acao abre uma tela com o que sera feito, comandos e riscos." \
     "  !                     destaque visual para acao de risco/destrutiva." \
     "  (somente leitura)     consulta; nao altera o sistema." \
@@ -2527,7 +3376,7 @@ help_text() {
     "  LVM/FS, rescan SCSI/FC, discos, multipath/HBAs, swap, uso, hardware e logs." \
     "" \
     "USUARIOS / SERVICOS / PACOTES" \
-    "  Cria usuarios/grupos, senha, lock, grupos privilegiados e remocao." \
+    "  Mostra UID, GID primario e grupos adicionais; cria contas/grupos e remove." \
     "  Gerencia systemctl/service, enable/disable, logs, cron/timers e kill." \
     "  Instala, remove, atualiza, busca pacotes, security e subscription." \
     "" \
@@ -2571,17 +3420,21 @@ valid_group_name() {
 
 select_user() {
   local -a items=()
-  local name uid home shell
-  while IFS=: read -r name _ uid _ _ home shell; do
+  local -A gmap=()
+  local name uid gid gname home shell
+  while IFS=: read -r gname _ gid _; do
+    gmap[$gid]=$gname
+  done < <(timeout 10 getent group)
+  while IFS=: read -r name _ uid gid _ home shell; do
     [[ $name == root || $uid -ge 1000 ]] || continue
     [[ $uid -lt 65534 ]] || continue
-    items+=("$name" "$name | uid=$uid | ${home:-?} | ${shell:-?}")
+    items+=("$name" "$name | uid=$uid | gid=$gid (${gmap[$gid]:-?}) | ${home:-?} | ${shell:-?}")
   done < <(timeout 10 getent passwd)
   if ((${#items[@]} == 0)); then
     ui_error "Usuarios" "Nenhum usuario gerenciavel encontrado."
     return 1
   fi
-  show_menu "Selecionar usuario" "Usuarios locais (root e UID >= 1000):" "${items[@]}"
+  show_menu "Selecionar usuario" "Usuarios locais (root e UID >= 1000), UID, GID primario e home:" "${items[@]}"
 }
 
 select_group() {
@@ -2598,14 +3451,58 @@ select_group() {
 }
 
 users_overview() {
-  local out
+  local out name uid gid gname home shell members m primary additional line
+  local -A gmap=() ugroups=()
+  local -a memarr=()
+  while IFS=: read -r gname _ gid members; do
+    gmap[$gid]=$gname
+    IFS=, read -r -a memarr <<<"$members"
+    for m in "${memarr[@]}"; do
+      [[ -n $m ]] && ugroups[$m]+="${ugroups[$m]:+,}$gname($gid)"
+    done
+  done < <(timeout 10 getent group)
   out="=== USUARIOS (root + UID >= 1000) ==="$'\n'
-  out+="$(timeout 10 getent passwd | awk -F: '$1=="root" || ($3>=1000 && $3<65534) {printf "%-20s uid=%-6s home=%-24s shell=%s\n",$1,$3,$6,$7}' 2>&1)"$'\n\n'
-  out+="=== GRUPOS COM MEMBROS ==="$'\n'
-  out+="$(timeout 10 getent group | awk -F: '$4!="" {printf "%-20s gid=%-6s %s\n",$1,$3,$4}' 2>&1)"$'\n\n'
-  out+="=== USUARIOS LOGADOS ==="$'\n'"$(timeout 5 who 2>&1)"$'\n\n'
-  out+="=== ULTIMOS LOGINS ==="$'\n'"$(timeout 5 last -n 10 2>&1)"
-  show_text "Usuarios e grupos" "$out"
+  printf -v line '%-18s %-8s %-20s %-24s %s' "USUARIO" "UID" "GID PRIMARIO" "HOME" "SHELL"
+  out+="$line"$'\n'
+  while IFS=: read -r name _ uid gid _ home shell; do
+    [[ $name == root || $uid -ge 1000 ]] || continue
+    [[ $uid -lt 65534 ]] || continue
+    gname=${gmap[$gid]:-?}
+    printf -v line '%-18s %-8s %-20s %-24s %s' "$name" "$uid" "$gid ($gname)" "${home:-?}" "${shell:-?}"
+    out+="$line"$'\n'
+  done < <(timeout 10 getent passwd)
+  out+=$'\n'"=== GRUPOS POR USUARIO ==="$'\n'
+  printf -v line '%-18s %-24s %s' "USUARIO" "GRUPO PRIMARIO" "GRUPOS ADICIONAIS"
+  out+="$line"$'\n'
+  while IFS=: read -r name _ uid gid _ home shell; do
+    [[ $name == root || $uid -ge 1000 ]] || continue
+    [[ $uid -lt 65534 ]] || continue
+    primary="$gid (${gmap[$gid]:-?})"
+    additional=${ugroups[$name]:-nenhum}
+    printf -v line '%-18s %-24s %s' "$name" "$primary" "$additional"
+    out+="$line"$'\n'
+  done < <(timeout 10 getent passwd)
+  out+=$'\n'"=== USUARIOS LOGADOS ==="$'\n'"$(timeout 5 who 2>&1)"
+  show_text "Usuarios, UID, GID e grupos" "$out"
+}
+
+groups_overview() {
+  local out gname gid members line
+  out="=== GRUPOS LOCAIS ==="$'\n'
+  printf -v line '%-20s %-8s %s' "GRUPO" "GID" "MEMBROS"
+  out+="$line"$'\n'
+  while IFS=: read -r gname _ gid members; do
+    printf -v line '%-20s %-8s %s' "$gname" "$gid" "${members:-nenhum}"
+    out+="$line"$'\n'
+  done < <(timeout 10 getent group)
+  show_text "Grupos, GID e membros" "$out"
+}
+
+logins_overview() {
+  local out
+  out="=== USUARIOS LOGADOS ==="$'\n'"$(timeout 5 who 2>&1)"$'\n\n'
+  out+="=== ULTIMOS LOGINS ==="$'\n'"$(timeout 5 last -n 20 2>&1)"
+  show_text "Logins e ultimos acessos" "$out"
 }
 
 create_user() {
@@ -2802,27 +3699,70 @@ delete_group() {
 users_menu() {
   local c
   while :; do
-    c=$(select_action "Usuarios e grupos" "Gerencie contas locais. Cada opcao abre detalhes antes de executar." \
-      1 "Consultar usuarios e grupos (somente leitura)" \
-      2 "Criar usuario (modifica o sistema)" \
-      3 "Definir senha interativamente (modifica o sistema)" \
-      4 "Forcar troca de senha (modifica o sistema)" \
-      5 "Adicionar usuario a grupo (modifica o sistema)" \
-      6 "Abrir opcoes de bloqueio de conta (abre opcoes)" \
-      7 "Criar grupo (modifica o sistema)" \
-      8 "! Excluir usuario (destrutivo)" \
-      9 "! Excluir grupo (destrutivo)" \
+    c=$(show_menu "Usuarios e grupos" "Escolha uma categoria. Cada item abre um submenu." \
+      1 "Consultar usuarios e grupos (abre menu)" \
+      2 "Criar ou alterar usuario/grupo (abre menu)" \
+      3 "Remover usuario ou grupo (abre menu)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) users_query_menu ;;
+      2) users_change_menu ;;
+      3) users_remove_menu ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+users_query_menu() {
+  local c
+  while :; do
+    c=$(select_action "Consultar usuarios e grupos" "Somente leitura. Cada opcao abre detalhes com comandos e exemplo." \
+      1 "Consultar usuarios, UID, GID e grupos (somente leitura)" \
+      2 "Consultar grupos, GID e membros (somente leitura)" \
+      3 "Consultar logins e ultimos acessos (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) users_overview ;;
-      2) create_user ;;
-      3) user_set_password ;;
-      4) user_expire_password ;;
-      5) user_add_group ;;
-      6) user_lock_toggle ;;
-      7) create_group ;;
-      8) delete_user ;;
-      9) delete_group ;;
+      2) groups_overview ;;
+      3) logins_overview ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+users_change_menu() {
+  local c
+  while :; do
+    c=$(select_action "Criar ou alterar usuario/grupo" "Cada opcao abre detalhes com impacto, comandos e exemplos." \
+      1 "Criar usuario (modifica o sistema)" \
+      2 "Definir senha interativamente (modifica o sistema)" \
+      3 "Forcar troca de senha (modifica o sistema)" \
+      4 "Adicionar usuario a grupo (modifica o sistema)" \
+      5 "Abrir opcoes de bloqueio de conta (abre opcoes)" \
+      6 "Criar grupo (modifica o sistema)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) create_user ;;
+      2) user_set_password ;;
+      3) user_expire_password ;;
+      4) user_add_group ;;
+      5) user_lock_toggle ;;
+      6) create_group ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+users_remove_menu() {
+  local c
+  while :; do
+    c=$(select_action "Remover usuario ou grupo" "Acoes destrutivas. Cada opcao mostra riscos, comandos e exemplo." \
+      1 "! Excluir usuario (destrutivo)" \
+      2 "! Excluir grupo (destrutivo)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) delete_user ;;
+      2) delete_group ;;
       0) return 0 ;;
     esac
   done
@@ -2989,21 +3929,60 @@ scheduled_jobs() {
 services_menu() {
   local c
   while :; do
-    c=$(select_action "Servicos e processos" "Backend: $(service_backend). Cada opcao abre detalhes antes de executar." \
+    c=$(show_menu "Servicos e processos" "Backend: $(service_backend). Escolha uma categoria." \
+      1 "Consultar servicos e processos (abre menu)" \
+      2 "Gerenciar servicos (abre menu)" \
+      3 "Encerrar processos (abre menu)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) services_query_menu ;;
+      2) services_manage_menu ;;
+      3) services_remove_menu ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+services_query_menu() {
+  local c
+  while :; do
+    c=$(select_action "Consultar servicos e processos" "Somente leitura. Cada opcao abre detalhes, comandos e exemplo." \
       1 "Consultar servicos essenciais (somente leitura)" \
       2 "Consultar servicos com falha (somente leitura)" \
-      3 "Abrir gerenciamento de servico (abre opcoes)" \
-      4 "Consultar processos por CPU e memoria (somente leitura)" \
-      5 "! Encerrar processo (destrutivo)" \
-      6 "Consultar cron e timers (somente leitura)" \
+      3 "Consultar processos por CPU e memoria (somente leitura)" \
+      4 "Consultar cron e timers (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) service_status ;;
       2) service_failed ;;
-      3) manage_service ;;
-      4) top_processes ;;
-      5) kill_process ;;
-      6) scheduled_jobs ;;
+      3) top_processes ;;
+      4) scheduled_jobs ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+services_manage_menu() {
+  local c
+  while :; do
+    c=$(select_action "Gerenciar servicos" "Cada opcao abre detalhes com impacto, comandos e exemplo." \
+      1 "Abrir gerenciamento de servico (abre opcoes)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) manage_service ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+services_remove_menu() {
+  local c
+  while :; do
+    c=$(select_action "Encerrar processos" "Acoes destrutivas. Cada opcao mostra riscos, comandos e exemplo." \
+      1 "! Encerrar processo (destrutivo)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) kill_process ;;
       0) return 0 ;;
     esac
   done
@@ -3160,17 +4139,31 @@ packages_menu() {
   local c pkg
   pkg=$(pkg_backend 2>/dev/null || printf 'n/d')
   while :; do
-    c=$(select_action "Pacotes e atualizacoes" "Backend: $pkg. Cada opcao abre detalhes antes de executar." \
+    c=$(show_menu "Pacotes e atualizacoes" "Backend: $pkg. Escolha uma categoria." \
+      1 "Consultar pacotes e repositorios (abre menu)" \
+      2 "Instalar ou atualizar (abre menu)" \
+      3 "Remover pacote (abre menu)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) packages_query_menu ;;
+      2) packages_install_menu ;;
+      3) packages_remove_menu ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+packages_query_menu() {
+  local c pkg
+  pkg=$(pkg_backend 2>/dev/null || printf 'n/d')
+  while :; do
+    c=$(select_action "Consultar pacotes e repositorios" "Backend: $pkg. Somente leitura; cada opcao mostra comandos e exemplo." \
       1 "Consultar repositorios (somente leitura)" \
       2 "Consultar atualizacoes disponiveis (somente leitura)" \
       3 "Consultar historico de transacoes (somente leitura)" \
       4 "Buscar pacote (somente leitura)" \
       5 "Consultar informacoes de pacote (somente leitura)" \
-      6 "Instalar pacote (modifica o sistema)" \
-      7 "! Remover pacote (destrutivo)" \
-      8 "! Atualizar todos (modifica o sistema; pode exigir reboot)" \
-      9 "! Aplicar atualizacoes de seguranca (modifica o sistema)" \
-      10 "Consultar Subscription Manager (somente leitura)" \
+      6 "Consultar Subscription Manager (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) pkg_repos ;;
@@ -3178,11 +4171,39 @@ packages_menu() {
       3) pkg_history ;;
       4) pkg_search ;;
       5) pkg_info ;;
-      6) pkg_install ;;
-      7) pkg_remove ;;
-      8) pkg_update_all ;;
-      9) pkg_security ;;
-      10) pkg_subscription ;;
+      6) pkg_subscription ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+packages_install_menu() {
+  local c pkg
+  pkg=$(pkg_backend 2>/dev/null || printf 'n/d')
+  while :; do
+    c=$(select_action "Instalar ou atualizar pacotes" "Backend: $pkg. Cada opcao mostra impacto, comandos e exemplo." \
+      1 "Instalar pacote (modifica o sistema)" \
+      2 "! Atualizar todos (modifica o sistema; pode exigir reboot)" \
+      3 "! Aplicar atualizacoes de seguranca (modifica o sistema)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) pkg_install ;;
+      2) pkg_update_all ;;
+      3) pkg_security ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+packages_remove_menu() {
+  local c pkg
+  pkg=$(pkg_backend 2>/dev/null || printf 'n/d')
+  while :; do
+    c=$(select_action "Remover pacote" "Backend: $pkg. Acao destrutiva; revise riscos, comandos e exemplo." \
+      1 "! Remover pacote (destrutivo)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) pkg_remove ;;
       0) return 0 ;;
     esac
   done
@@ -3397,26 +4418,52 @@ ssh_test_config() {
 
 security_menu() {
   local c
+  while :;do
+    c=$(show_menu "Seguranca do sistema" "Firewall, SELinux e SSH. Escolha uma categoria." \
+      1 "Consultar seguranca (abre menu)" \
+      2 "Alterar configuracoes (abre menu)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) security_query_menu ;;
+      2) security_change_menu ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+security_query_menu() {
+  local c
   while :; do
-    c=$(select_action "Seguranca do sistema" "Firewall, SELinux e SSH. Cada opcao abre detalhes antes de executar." \
+    c=$(select_action "Consultar seguranca" "Somente leitura. Cada opcao abre detalhes, comandos e exemplo." \
       1 "Consultar firewall (somente leitura)" \
-      2 "Abrir opcoes de firewall (abre opcoes)" \
-      3 "Consultar SELinux (somente leitura)" \
-      4 "Abrir opcoes do SELinux (abre opcoes)" \
-      5 "Alterar booleano do SELinux (modifica o sistema)" \
-      6 "Consultar negacoes do SELinux (somente leitura)" \
-      7 "Auditar configuracao do SSH (somente leitura)" \
-      8 "Testar configuracao do SSH (somente leitura)" \
+      2 "Consultar SELinux (somente leitura)" \
+      3 "Consultar negacoes do SELinux (somente leitura)" \
+      4 "Auditar configuracao do SSH (somente leitura)" \
+      5 "Testar configuracao do SSH (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) firewall_status ;;
-      2) firewall_change ;;
-      3) selinux_status ;;
-      4) selinux_mode ;;
-      5) selinux_booleans ;;
-      6) selinux_denials ;;
-      7) ssh_audit ;;
-      8) ssh_test_config ;;
+      2) selinux_status ;;
+      3) selinux_denials ;;
+      4) ssh_audit ;;
+      5) ssh_test_config ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+security_change_menu() {
+  local c
+  while :; do
+    c=$(select_action "Alterar configuracoes de seguranca" "Cada opcao mostra impacto, comandos e exemplo." \
+      1 "Abrir opcoes de firewall (abre opcoes)" \
+      2 "Abrir opcoes do SELinux (abre opcoes)" \
+      3 "Alterar booleano do SELinux (modifica o sistema)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) firewall_change ;;
+      2) selinux_mode ;;
+      3) selinux_booleans ;;
       0) return 0 ;;
     esac
   done
@@ -3625,29 +4672,68 @@ cancel_shutdown() {
 system_menu() {
   local c
   while :; do
-    c=$(select_action "Sistema e energia" "Data/hora, NTP, kernel e energia. Cada opcao abre detalhes antes de executar." \
+    c=$(show_menu "Sistema e energia" "Escolha uma categoria: consultar, alterar ou energia." \
+      1 "Consultar sistema (abre menu)" \
+      2 "Alterar configuracoes (abre menu)" \
+      3 "Energia do servidor (abre menu)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) system_query_menu ;;
+      2) system_change_menu ;;
+      3) system_power_menu ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+system_query_menu() {
+  local c
+  while :; do
+    c=$(select_action "Consultar sistema" "Somente leitura. Cada opcao abre detalhes, comandos e exemplo." \
       1 "Consultar data, hora e timezone (somente leitura)" \
-      2 "Alterar timezone (modifica o sistema)" \
-      3 "Consultar NTP/chrony (somente leitura)" \
-      4 "Abrir opcoes de NTP (abre opcoes)" \
-      5 "Consultar sysctl (somente leitura)" \
-      6 "! Aplicar sysctl (modifica o sistema)" \
-      7 "Consultar boot e kernel (somente leitura)" \
-      8 "! Reiniciar servidor (destrutivo)" \
-      9 "! Desligar servidor (destrutivo)" \
-      10 "Cancelar shutdown (modifica o sistema)" \
+      2 "Consultar NTP/chrony (somente leitura)" \
+      3 "Consultar sysctl (somente leitura)" \
+      4 "Consultar boot e kernel (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) time_status ;;
-      2) timezone_change ;;
-      3) ntp_status ;;
-      4) ntp_toggle ;;
-      5) sysctl_view ;;
-      6) sysctl_set ;;
-      7) boot_info ;;
-      8) reboot_system ;;
-      9) shutdown_system ;;
-      10) cancel_shutdown ;;
+      2) ntp_status ;;
+      3) sysctl_view ;;
+      4) boot_info ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+system_change_menu() {
+  local c
+  while :; do
+    c=$(select_action "Alterar configuracoes do sistema" "Cada opcao mostra impacto, comandos e exemplo." \
+      1 "Alterar timezone (modifica o sistema)" \
+      2 "Abrir opcoes de NTP (abre opcoes)" \
+      3 "! Aplicar sysctl (modifica o sistema)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) timezone_change ;;
+      2) ntp_toggle ;;
+      3) sysctl_set ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+system_power_menu() {
+  local c
+  while :; do
+    c=$(select_action "Energia do servidor" "Acoes de alto impacto. Cada opcao mostra riscos, comandos e exemplo." \
+      1 "! Reiniciar servidor (destrutivo)" \
+      2 "! Desligar servidor (destrutivo)" \
+      3 "Cancelar shutdown (modifica o sistema)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) reboot_system ;;
+      2) shutdown_system ;;
+      3) cancel_shutdown ;;
       0) return 0 ;;
     esac
   done
@@ -3713,23 +4799,49 @@ lvm_menu() {
 network_menu() {
   local c
   while :; do
-    c=$(select_action "Rede e conectividade" "Backend: $(version_network_backend). Alteracoes podem interromper o SSH; cada opcao abre detalhes." \
+    c=$(show_menu "Rede e conectividade" "Backend: $(version_network_backend). Escolha uma categoria." \
+      1 "Consultar e testar (abre menu)" \
+      2 "Configurar ou alterar (abre menu)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) network_query_menu ;;
+      2) network_config_menu ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+network_query_menu() {
+  local c
+  while :; do
+    c=$(select_action "Consultar e testar rede" "Somente leitura. Cada opcao abre detalhes, comandos e exemplo." \
       1 "Consultar interfaces e enderecos (somente leitura)" \
-      2 "! Alterar IPv4 (modifica a rede; pode afetar SSH)" \
-      3 "! Configurar heartbeat (modifica a rede; pode afetar SSH)" \
-      4 "! Alterar para DHCP (modifica a rede; pode afetar SSH)" \
-      5 "Testar conectividade (somente leitura)" \
-      6 "Consultar rotas, DNS e ARP (somente leitura)" \
-      7 "Definir hostname e /etc/hosts (modifica o sistema)" \
+      2 "Testar conectividade (somente leitura)" \
+      3 "Consultar rotas, DNS e ARP (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) network_interfaces ;;
-      2) configure_network full ;;
-      3) configure_network heartbeat ;;
-      4) configure_dhcp ;;
-      5) test_connectivity ;;
-      6) network_details ;;
-      7) configure_hostname ;;
+      2) test_connectivity ;;
+      3) network_details ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+network_config_menu() {
+  local c
+  while :; do
+    c=$(select_action "Configurar ou alterar rede" "Alteracoes podem interromper o SSH. Cada opcao mostra riscos e comandos." \
+      1 "! Alterar IPv4 (modifica a rede; pode afetar SSH)" \
+      2 "! Configurar heartbeat (modifica a rede; pode afetar SSH)" \
+      3 "! Alterar para DHCP (modifica a rede; pode afetar SSH)" \
+      4 "Definir hostname e /etc/hosts (modifica o sistema)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) configure_network full ;;
+      2) configure_network heartbeat ;;
+      3) configure_dhcp ;;
+      4) configure_hostname ;;
       0) return 0 ;;
     esac
   done
