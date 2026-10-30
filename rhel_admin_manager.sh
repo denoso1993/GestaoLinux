@@ -20,7 +20,6 @@ STATUS_LINE2=""
 STATUS_LINE3=""
 TMP_DIR=""
 RUN_OUT=""
-RUN_RC=0
 LOG_USER=""
 NET_IFACE=""
 NET_IP=""
@@ -77,7 +76,6 @@ run_cmd() {
   out=$("$@" 2>&1)
   rc=$?
   RUN_OUT=$out
-  RUN_RC=$rc
   if ((rc == 0)); then
     log_event SUCESSO 0 "$preview"
   else
@@ -94,7 +92,6 @@ run_shell() {
   rc=$?
   rm -f "$f"
   RUN_OUT=$out
-  RUN_RC=$rc
   if ((rc == 0)); then
     log_event SUCESSO 0 "$script"
   else
@@ -164,7 +161,7 @@ refresh_status() {
   [[ -n $selinux ]] || selinux="n/d"
   fw="n/d"
   if ((RHEL_VER >= 7)); then
-    fw=$(systemctl is-active firewalld 2>/dev/null)
+    fw=$(timeout 3 systemctl is-active firewalld 2>/dev/null)
     [[ -n $fw ]] || fw="n/d"
   elif timeout 3 service iptables status >/dev/null 2>&1; then
     fw="ativo"
@@ -175,10 +172,22 @@ refresh_status() {
   STATUS_LINE2="  USO   up $up  |  load $load  |  mem $mem  |  swap $swap  |  / $rootpct%"
   STATUS_LINE3="  SEG   SELinux $selinux  |  fw $fw  |  fail $failed  |  LVM $vg/$lv  |  batch $batch"
   STATUS_TS=$(date +%s)
+  if [[ -n $TMP_DIR ]]; then
+    printf '%s\t%s\t%s\t%s\n' "$STATUS_TS" "$STATUS_LINE1" "$STATUS_LINE2" "$STATUS_LINE3" >"$TMP_DIR/status.cache"
+  fi
 }
 
 status_block() {
-  (( $(date +%s) - STATUS_TS >= 30 )) && refresh_status
+  local now ts l1 l2 l3 cache="$TMP_DIR/status.cache"
+  now=$(date +%s)
+  if [[ -n $TMP_DIR && -r $cache ]]; then
+    IFS=$'\t' read -r ts l1 l2 l3 <"$cache"
+    if [[ $ts =~ ^[0-9]+$ ]] && ((now - ts < 30)); then
+      printf '%s\n%s\n%s' "$l1" "$l2" "$l3"
+      return
+    fi
+  fi
+  refresh_status
   printf '%s\n%s\n%s' "$STATUS_LINE1" "$STATUS_LINE2" "$STATUS_LINE3"
 }
 
@@ -243,7 +252,7 @@ select_action() {
   local title=$1 prompt=$2
   shift 2
   local -a raw=("$@") display=()
-  local i tag item impact hint text next
+  local i tag item impact hint text
   for ((i = 0; i < ${#raw[@]}; i += 2)); do
     if [[ ${raw[$i]} == 0 ]]; then
       display+=("${raw[$i]}" "${raw[$((i + 1))]}")
@@ -686,7 +695,7 @@ init_log() {
 }
 
 fs_type() {
-  blkid -o value -s TYPE "$1" 2>/dev/null | head -n1
+  timeout 5 blkid -o value -s TYPE "$1" 2>/dev/null | head -n1
 }
 
 mountpoint_of() {
@@ -696,7 +705,7 @@ mountpoint_of() {
     mp=$(findmnt -n -o TARGET "$dev" 2>/dev/null | head -n1)
   fi
   if [[ -z $mp ]] && command -v lsblk >/dev/null 2>&1; then
-    mp=$(lsblk -no MOUNTPOINT "$dev" 2>/dev/null | awk 'NF {print; exit}')
+    mp=$(timeout 5 lsblk -no MOUNTPOINT "$dev" 2>/dev/null | awk 'NF {print; exit}')
   fi
   if [[ -z $mp ]]; then
     mp=$(awk -v d="$dev" -v r="$real" '$1==d || $1==r {print $2; exit}' /proc/mounts)
@@ -709,7 +718,7 @@ device_mounted() {
   mp=$(mountpoint_of "$dev")
   [[ -n $mp ]] && return 0
   if command -v lsblk >/dev/null 2>&1; then
-    mm=$(lsblk -dn -o MAJ:MIN "$dev" 2>/dev/null | awk 'NR==1 {print $1}')
+    mm=$(timeout 5 lsblk -dn -o MAJ:MIN "$dev" 2>/dev/null | awk 'NR==1 {print $1}')
     [[ -n $mm ]] && awk -v mm="$mm" '$3==mm {found=1} END {exit !found}' /proc/self/mountinfo && return 0
   fi
   return 1
@@ -1043,7 +1052,7 @@ mount_fs() {
     fi
     break
   done
-  uuid=$(blkid -s UUID -o value "$dev" 2>/dev/null | head -n1)
+  uuid=$(timeout 5 blkid -s UUID -o value "$dev" 2>/dev/null | head -n1)
   if [[ ! $uuid =~ ^[A-Fa-f0-9-]+$ ]]; then
     ui_error "UUID ausente" "Nao foi possivel obter UUID de $dev."
     return 1
@@ -1233,8 +1242,8 @@ find_nm_conn() {
 
 nm_profile_is_slave() {
   local conn=$1 master slave
-  master=$(nmcli -g connection.master connection show "$conn" 2>/dev/null)
-  slave=$(nmcli -g connection.slave-type connection show "$conn" 2>/dev/null)
+  master=$(timeout 5 nmcli -g connection.master connection show "$conn" 2>/dev/null)
+  slave=$(timeout 5 nmcli -g connection.slave-type connection show "$conn" 2>/dev/null)
   [[ -n $master && $master != "--" ]] || [[ -n $slave && $slave != "--" ]]
 }
 
@@ -1253,7 +1262,7 @@ read_network_form() {
         ui_error "Gateway invalido" "Informe um endereco IPv4 valido."
         continue
       fi
-    if [[ $gw == $NET_IP ]]; then
+    if [[ $gw == "$NET_IP" ]]; then
       ui_error "Gateway invalido" "O gateway nao pode ser igual ao IP da interface."
       continue
     fi
@@ -1459,7 +1468,7 @@ configure_hostname() {
     return 1
   fi
   cur=$(hostname 2>/dev/null)
-  fq=$(hostname -f 2>/dev/null)
+  fq=$(timeout 5 hostname -f 2>/dev/null)
   ui_ok "Hostname atualizado" "Hostname atual: $cur"$'\n'"FQDN resolvido: ${fq:-nao resolvido}"$'\n\n'"$outcome"$'\n'"Reinicie servicos/aplicacoes dependentes do hostname."
 }
 
@@ -1649,7 +1658,7 @@ batch_edit_inventory() {
     batch_inventory || return 1
   }
   local ed=${EDITOR:-vi}
-  [[ $ed =~ ^[A-Za-z0-9_./-]+$ ]] || ed=vi
+  [[ $ed =~ ^[A-Za-z0-9_./-]+$ ]] || ed="vi"
   need_bin "$ed" "$ed" || return 1
   "$ed" "$BATCH_FILE"
 }
@@ -1764,7 +1773,7 @@ batch_wrap_remote() {
 }
 
 batch_session_check() {
-  tmux has-session -t "$BATCH_SESSION" 2>/dev/null || return 0
+  timeout 2 tmux has-session -t "$BATCH_SESSION" 2>/dev/null || return 0
   local c
   c=$(select_action "Sessao TMUX existente" "A sessao '$BATCH_SESSION' ja existe." \
     attach "Anexar a sessao existente (interativo)" \
@@ -1777,11 +1786,11 @@ batch_session_check() {
       return 1
       ;;
     new)
-      if ! confirm_strong "Encerrar sessao TMUX" "tmux kill-session -t $(q "$BATCH_SESSION")" \
+      if ! confirm_strong "Encerrar sessao TMUX" "timeout 5 tmux kill-session -t $(q "$BATCH_SESSION")" \
         "Janelas em execucao serao interrompidas."; then
         return 1
       fi
-      run_cmd tmux kill-session -t "$BATCH_SESSION" || {
+      run_cmd timeout 5 tmux kill-session -t "$BATCH_SESSION" || {
         ui_error "TMUX" "Nao foi possivel encerrar a sessao $BATCH_SESSION." "$RUN_OUT"
         return 1
       }
@@ -1846,7 +1855,7 @@ while :; do
   printf '%-32s %-20s %s\n' 'ALVO' 'STATUS' 'LOG'
   printf '%s\n' '-------------------------------------------------------------------------------'
   ok=0; fail=0; wait=0; total=0
-  while IFS=$'\t' read -r idx target port label; do
+  while IFS=$'\t' read -r idx target port _; do
     total=$((total + 1))
     status="$dir/status-$idx"
     log="$dir/host-$idx.log"
@@ -1868,7 +1877,7 @@ while :; do
 done
 MON
   chmod 700 "$BATCH_DIR/monitor.sh"
-  tmux new-session -d -s "$BATCH_SESSION" -n "monitor" "bash $(q "$BATCH_DIR/monitor.sh")" || {
+  timeout 10 tmux new-session -d -s "$BATCH_SESSION" -n "monitor" "bash $(q "$BATCH_DIR/monitor.sh")" || {
     ui_error "TMUX" "Nao foi possivel criar a sessao $BATCH_SESSION."
     return 1
   }
@@ -1933,7 +1942,7 @@ BODY
     win=$(printf '%s' "${BATCH_NAMES[$i]}" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-24)
     [[ -n $win ]] || win="host-$i"
     win="$i-$win"
-    if ! tmux new-window -d -t "$BATCH_SESSION" -n "$win" "bash $(q "$runfile")" 2>/dev/null; then
+    if ! timeout 5 tmux new-window -d -t "$BATCH_SESSION" -n "$win" "bash $(q "$runfile")" 2>/dev/null; then
       printf '254\t%s\t%s\n' "$(date +%s)" "$(date +%s)" >"$statusfile"
       printf 'Falha ao iniciar a janela tmux para %s\n' "$target" >"$outfile"
       log_event ERRO 254 "batch spawn target=$target session=$BATCH_SESSION"
@@ -1964,10 +1973,10 @@ batch_report() {
     ui_error "Relatorio" "Nenhum lote encontrado. Execute um batch primeiro."
     return 1
   fi
-  local text idx target port label status log rc start end st dur
+  local text idx target port status log rc start end st dur
   local total=0 ok=0 fail=0 pending=0
   text="Relatorio batch"$'\n'"Diretorio: $dir"$'\n'"Acao: $(cat "$dir/action.txt" 2>/dev/null)"$'\n\n'
-  while IFS=$'\t' read -r idx target port label; do
+  while IFS=$'\t' read -r idx target port _; do
     total=$((total + 1))
     status="$dir/status-$idx"
     log="$dir/host-$idx.log"
@@ -2064,7 +2073,7 @@ batch_interactive() {
 
 batch_attach() {
   need_bin tmux "tmux (RHEL6: EPEL)" || return 1
-  if ! tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
+  if ! timeout 2 tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
     ui_error "TMUX" "Nao existe sessao $BATCH_SESSION."
     return 1
   fi
@@ -2074,13 +2083,13 @@ batch_attach() {
 
 batch_kill_session() {
   need_bin tmux "tmux (RHEL6: EPEL)" || return 1
-  if ! tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
+  if ! timeout 2 tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
     ui_msg "TMUX" "Nao existe sessao $BATCH_SESSION."
     return 0
   fi
-  confirm_strong "Encerrar sessao TMUX" "tmux kill-session -t $(q "$BATCH_SESSION")" \
+  confirm_strong "Encerrar sessao TMUX" "timeout 5 tmux kill-session -t $(q "$BATCH_SESSION")" \
     "Todas as janelas e comandos em execucao serao encerrados." || return 0
-  if ! run_cmd tmux kill-session -t "$BATCH_SESSION"; then
+  if ! run_cmd timeout 5 tmux kill-session -t "$BATCH_SESSION"; then
     ui_error "TMUX" "Nao foi possivel encerrar a sessao." "$RUN_OUT"
     return 1
   fi
@@ -2382,7 +2391,11 @@ dashboard_text() {
   else
     failed="n/d"
   fi
-  nics=$(ls /sys/class/net 2>/dev/null | grep -vc '^lo$')
+  nics=0
+  for _n in /sys/class/net/*; do
+    [[ ${_n##*/} == lo ]] && continue
+    nics=$((nics + 1))
+  done
   batch_count=0
   [[ -r $BATCH_FILE && ! -L $BATCH_FILE ]] && batch_count=$(grep -vcE '^[[:space:]]*(#|$)' "$BATCH_FILE" 2>/dev/null)
   if command -v tmux >/dev/null 2>&1 && timeout 2 tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
@@ -2401,7 +2414,7 @@ dashboard_text() {
   [[ -n $selinux ]] || selinux="n/d"
   fw="n/d"
   if ((RHEL_VER >= 7)); then
-    fw=$(systemctl is-active firewalld 2>/dev/null)
+    fw=$(timeout 3 systemctl is-active firewalld 2>/dev/null)
     [[ -n $fw ]] || fw="n/d"
   elif timeout 3 service iptables status >/dev/null 2>&1; then
     fw="ativo"
@@ -2563,7 +2576,7 @@ select_user() {
     [[ $name == root || $uid -ge 1000 ]] || continue
     [[ $uid -lt 65534 ]] || continue
     items+=("$name" "$name | uid=$uid | ${home:-?} | ${shell:-?}")
-  done < <(getent passwd)
+  done < <(timeout 10 getent passwd)
   if ((${#items[@]} == 0)); then
     ui_error "Usuarios" "Nenhum usuario gerenciavel encontrado."
     return 1
@@ -2576,7 +2589,7 @@ select_group() {
   local name gid members
   while IFS=: read -r name _ gid members; do
     items+=("$name" "$name | gid=$gid | membros=${members:-nenhum}")
-  done < <(getent group)
+  done < <(timeout 10 getent group)
   if ((${#items[@]} == 0)); then
     ui_error "Grupos" "Nenhum grupo encontrado."
     return 1
@@ -2587,11 +2600,11 @@ select_group() {
 users_overview() {
   local out
   out="=== USUARIOS (root + UID >= 1000) ==="$'\n'
-  out+="$(getent passwd | awk -F: '$1=="root" || ($3>=1000 && $3<65534) {printf "%-20s uid=%-6s home=%-24s shell=%s\n",$1,$3,$6,$7}' 2>&1)"$'\n\n'
+  out+="$(timeout 10 getent passwd | awk -F: '$1=="root" || ($3>=1000 && $3<65534) {printf "%-20s uid=%-6s home=%-24s shell=%s\n",$1,$3,$6,$7}' 2>&1)"$'\n\n'
   out+="=== GRUPOS COM MEMBROS ==="$'\n'
-  out+="$(getent group | awk -F: '$4!="" {printf "%-20s gid=%-6s %s\n",$1,$3,$4}' 2>&1)"$'\n\n'
-  out+="=== USUARIOS LOGADOS ==="$'\n'"$(who 2>&1)"$'\n\n'
-  out+="=== ULTIMOS LOGINS ==="$'\n'"$(last -n 10 2>&1)"
+  out+="$(timeout 10 getent group | awk -F: '$4!="" {printf "%-20s gid=%-6s %s\n",$1,$3,$4}' 2>&1)"$'\n\n'
+  out+="=== USUARIOS LOGADOS ==="$'\n'"$(timeout 5 who 2>&1)"$'\n\n'
+  out+="=== ULTIMOS LOGINS ==="$'\n'"$(timeout 5 last -n 10 2>&1)"
   show_text "Usuarios e grupos" "$out"
 }
 
@@ -2601,7 +2614,7 @@ create_user() {
   local -a gl=()
   while :; do
     user=$(ask "Criar usuario" "Nome do usuario (minusculo, sem espacos):") || return 1
-    valid_user_name "$user" && ! getent passwd "$user" >/dev/null && break
+    valid_user_name "$user" && ! timeout 5 getent passwd "$user" >/dev/null && break
     ui_error "Usuario invalido" "Use letras minusculas, numeros, _ ou -; o usuario nao pode existir."
   done
   shell=$(ask "Criar usuario" "Shell:" "/bin/bash") || return 1
@@ -2613,7 +2626,7 @@ create_user() {
   groups=$(ask "Criar usuario" "Grupos adicionais (virgula, opcional):") || return 1
   groups=${groups//,/ }
   for g in $groups; do
-    if ! valid_group_name "$g" || ! getent group "$g" >/dev/null; then
+    if ! valid_group_name "$g" || ! timeout 5 getent group "$g" >/dev/null; then
       ui_error "Grupo invalido" "Grupo nao encontrado: $g"
       return 1
     fi
@@ -2757,7 +2770,7 @@ create_group() {
   local group
   while :; do
     group=$(ask "Criar grupo" "Nome do grupo:") || return 1
-    valid_group_name "$group" && ! getent group "$group" >/dev/null && break
+    valid_group_name "$group" && ! timeout 5 getent group "$group" >/dev/null && break
     ui_error "Grupo invalido" "Use letras minusculas, numeros, _ ou -; o grupo nao pode existir."
   done
   confirm_exec "Criar grupo" "groupadd $(q "$group")" "Grupo: $group" || return 0
@@ -2772,7 +2785,7 @@ delete_group() {
   need_bin groupdel shadow-utils || return 1
   local group gid
   group=$(select_group) || return 1
-  gid=$(getent group "$group" 2>/dev/null | cut -d: -f3)
+  gid=$(timeout 5 getent group "$group" 2>/dev/null | cut -d: -f3)
   if [[ $group == root || ${gid:-0} -lt 1000 ]]; then
     ui_error "Operacao bloqueada" "Excluir grupo de sistema nao e permitido."
     return 1
@@ -2868,17 +2881,17 @@ manage_service() {
     disable "! Desabilitar no boot (destrutivo)") || return 1
   if [[ $action == status ]]; then
     if ((RHEL_VER >= 7)); then
-      show_text "Status - $svc" "$(systemctl status "$svc" --no-pager 2>&1)"
+      show_text "Status - $svc" "$(timeout 10 systemctl status "$svc" --no-pager 2>&1)"
     else
-      show_text "Status - $svc" "$(service "$svc" status 2>&1)"
+      show_text "Status - $svc" "$(timeout 10 service "$svc" status 2>&1)"
     fi
     return 0
   fi
   if [[ $action == logs ]]; then
     if ((RHEL_VER >= 7)); then
-      show_text "Logs - $svc" "$(journalctl -u "$svc" -n 120 --no-pager 2>&1)"
+      show_text "Logs - $svc" "$(timeout 10 journalctl -u "$svc" -n 120 --no-pager 2>&1)"
     else
-      show_text "Logs - $svc" "$(grep -i "$svc" /var/log/messages 2>/dev/null | tail -n 120)"
+      show_text "Logs - $svc" "$(timeout 10 grep -i "$svc" /var/log/messages 2>/dev/null | tail -n 120)"
     fi
     return 0
   fi
