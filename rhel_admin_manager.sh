@@ -13,6 +13,10 @@ BACKTITLE="RHEL Admin Manager"
 UI_H=22
 UI_W=78
 MENU_ROWS=12
+STATUS_TS=0
+STATUS_LINE1=""
+STATUS_LINE2=""
+STATUS_LINE3=""
 TMP_DIR=""
 RUN_OUT=""
 RUN_RC=0
@@ -33,7 +37,7 @@ BATCH_NAMES=()
 BATCH_DEFAULT_USER=${BATCH_DEFAULT_USER:-}
 BATCH_SSH_USER=${BATCH_SSH_USER:-}
 BATCH_SSH_PREFIX=()
-BATCH_LAST_FILE=/var/tmp/rhel_admin_manager.last_batch
+BATCH_LAST_FILE=/var/log/rhel_admin_manager.last_batch
 
 die() {
   printf 'ERRO: %s\n' "$*" >&2
@@ -44,6 +48,12 @@ q() {
   printf '%q' "$1"
 }
 
+sh_quote() {
+  local s=$1
+  s=${s//\'/\'\\\'\'}
+  printf "'%s'" "$s"
+}
+
 cmd_line() {
   local s
   s=$(printf '%q ' "$@")
@@ -51,15 +61,13 @@ cmd_line() {
 }
 
 log_event() {
-  local status=$1 rc=$2 cmd=$3 detail=${4:-}
+  local status=$1 rc=$2 cmd=$3 detail=${4:-} line
   cmd=$(printf '%s' "$cmd" | tr '\n\r' '; ')
   detail=$(printf '%s' "$detail" | tr '\n\r' '  ')
-  printf '%s | user=%s | status=%s | rc=%s | cmd=%s' \
-    "$(date '+%Y-%m-%d %H:%M:%S')" "$LOG_USER" "$status" "$rc" "$cmd" >>"$LOG_FILE"
-  if [[ -n $detail ]]; then
-    printf ' | detail=%s' "${detail:0:1500}" >>"$LOG_FILE"
-  fi
-  printf '\n' >>"$LOG_FILE"
+  line=$(printf '%s | user=%s | status=%s | rc=%s | cmd=%s' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$LOG_USER" "$status" "$rc" "$cmd")
+  [[ -n $detail ]] && line+=" | detail=${detail:0:1500}"
+  printf '%s\n' "$line" >>"$LOG_FILE"
 }
 
 run_cmd() {
@@ -101,21 +109,81 @@ set_ui() {
   [[ $l =~ ^[0-9]+$ ]] || l=24
   [[ $c =~ ^[0-9]+$ ]] || c=80
   UI_H=$((l - 2))
-  ((UI_H > 24)) && UI_H=24
-  ((UI_H < 12)) && UI_H=12
-  UI_W=$((c - 4))
-  ((UI_W > 100)) && UI_W=100
-  ((UI_W < 50)) && UI_W=50
+  ((UI_H < 16)) && UI_H=16
+  ((UI_H > l - 1)) && UI_H=$((l - 1))
+  UI_W=$((c - 2))
+  ((UI_W < 78)) && UI_W=78
   ((UI_W > c - 2)) && UI_W=$((c - 2))
-  MENU_ROWS=$((UI_H - 8))
-  ((MENU_ROWS < 4)) && MENU_ROWS=4
+  MENU_ROWS=$((UI_H - 9))
+  ((MENU_ROWS < 5)) && MENU_ROWS=5
+}
+
+init_theme() {
+  export NEWT_COLORS='root=,black;window=white,blue;border=black,cyan;shadow=black,black;title=black,cyan;button=black,cyan;actbutton=white,cyan;compactbutton=black,cyan;checkbox=black,cyan;actcheckbox=white,cyan;entry=black,white;label=black,white;listbox=black,white;actlistbox=white,blue;sellistbox=black,white;actsellistbox=white,blue;textbox=black,white;acttextbox=white,blue;helpline=white,blue;roottext=black,white;emptyscale=,black;fullscale=,cyan;disentry=black,white'
+}
+
+ui_footer() {
+  printf 'operador %s  |  %s' "${LOG_USER:-$(id -un)}" "$(date '+%H:%M')"
+}
+
+ui_rule() {
+  local n=$((UI_W - 2))
+  ((n < 60)) && n=60
+  printf '%*s' "$n" '' | tr ' ' '-'
+}
+
+refresh_status() {
+  local ip up load mem rootpct failed vg lv batch selinux fw
+  ip=$(ip -4 -o addr show scope global 2>/dev/null | awk 'NR==1 {print $4}')
+  [[ -z $ip ]] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [[ -n $ip ]] || ip="sem-ip"
+  up=$(uptime 2>/dev/null | sed 's/^ *//;s/.* up //;s/,.*//')
+  [[ -n $up ]] || up="n/d"
+  load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
+  [[ -n $load ]] || load="n/d"
+  mem=$(free -m 2>/dev/null | awk '/^Mem:/ {if ($2 > 0) printf "%d%%", ($3 * 100) / $2}')
+  [[ -n $mem ]] || mem="n/d"
+  rootpct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
+  [[ -n $rootpct ]] || rootpct="?"
+  failed="n/d"
+  if ((RHEL_VER >= 7)); then
+    failed=$(timeout 5 systemctl --failed --no-pager --plain 2>/dev/null | grep -c '\.service')
+    [[ $failed =~ ^[0-9]+$ ]] || failed="n/d"
+  fi
+  vg=$(vgs --noheadings 2>/dev/null | wc -l)
+  lv=$(lvs --noheadings 2>/dev/null | wc -l)
+  batch="inativa"
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
+    batch="ativa"
+  fi
+  selinux=$(getenforce 2>/dev/null)
+  [[ -n $selinux ]] || selinux="n/d"
+  fw="n/d"
+  if ((RHEL_VER >= 7)); then
+    fw=$(systemctl is-active firewalld 2>/dev/null)
+    [[ -n $fw ]] || fw="n/d"
+  elif timeout 3 service iptables status >/dev/null 2>&1; then
+    fw="ativo"
+  else
+    fw="inativo"
+  fi
+  STATUS_LINE1="  $(hostname -s 2>/dev/null || hostname)  |  $RHEL_LABEL  |  $ip  |  up $up"
+  STATUS_LINE2="  load $load  |  mem $mem  |  / $rootpct%  |  failed $failed  |  VG/LV $vg/$lv  |  batch $batch"
+  STATUS_LINE3="  SELinux $selinux  |  firewall $fw  |  log $(basename "$LOG_FILE")"
+  STATUS_TS=$(date +%s)
+}
+
+status_block() {
+  (( $(date +%s) - STATUS_TS >= 30 )) && refresh_status
+  printf '%s\n%s\n%s' "$STATUS_LINE1" "$STATUS_LINE2" "$STATUS_LINE3"
 }
 
 show_menu() {
   local title=$1 prompt=$2
   shift 2
   whiptail --backtitle "$BACKTITLE" --title "$title" \
-    --menu "$prompt" "$UI_H" "$UI_W" "$MENU_ROWS" "$@" 3>&1 1>&2 2>&3
+    --menu "$prompt"$'\n\n'"$(status_block)"$'\n\n  '"$(ui_footer)" \
+    "$UI_H" "$UI_W" "$MENU_ROWS" "$@" 3>&1 1>&2 2>&3
 }
 
 ask() {
@@ -127,27 +195,33 @@ ask() {
 }
 
 ui_msg() {
-  whiptail --backtitle "$BACKTITLE" --title "$1" --msgbox "$2" "$UI_H" "$UI_W"
+  local h=14
+  ((h > UI_H)) && h=$UI_H
+  whiptail --backtitle "$BACKTITLE" --title "$1" --msgbox "$2" "$h" "$UI_W"
 }
 
 ui_error() {
-  local title=$1 msg=$2 detail=${3:-} text
-  text=$msg
+  local title=$1 msg=$2 detail=${3:-} text h=20
+  text=$'== ERRO ==\n'"$msg"
   if [[ -n $detail ]]; then
-    text+=$'\n\nSaida (ultimas linhas):\n'"$(printf '%s' "$detail" | tail -n 12)"
+    text+=$'\n\n== SAIDA (ULTIMAS LINHAS) ==\n'"$(printf '%s' "$detail" | tail -n 12)"
   fi
-  text+=$'\n\nAuditoria: '"$LOG_FILE"
-  whiptail --backtitle "$BACKTITLE" --title "ERRO - $title" --msgbox "$text" "$UI_H" "$UI_W"
+  text+=$'\n\n== AUDITORIA ==\n'"$LOG_FILE"
+  ((h > UI_H)) && h=$UI_H
+  whiptail --backtitle "$BACKTITLE" --title "ERRO - $title" --msgbox "$text" "$h" "$UI_W"
 }
 
 ui_ok() {
-  whiptail --backtitle "$BACKTITLE" --title "$1" --msgbox "$2" "$UI_H" "$UI_W"
+  local h=14
+  ((h > UI_H)) && h=$UI_H
+  whiptail --backtitle "$BACKTITLE" --title "$1" --msgbox "$2"$'\n\n== AUDITORIA ==\n'"$LOG_FILE" "$h" "$UI_W"
 }
 
 confirm_exec() {
   local title=$1 cmds=$2 extra=${3:-} text
-  text=$'Comandos que serao executados:\n\n'"$cmds"
-  [[ -n $extra ]] && text+=$'\n\n'"$extra"
+  text=$'== COMANDOS EXATOS ==\n\n'"$cmds"
+  [[ -n $extra ]] && text+=$'\n\n== IMPACTO / OBSERVACOES ==\n'"$extra"
+  text+=$'\n\n== AUDITORIA ==\n'"$LOG_FILE"
   show_text "CONFIRMAR - $title" "$text" || return 1
   ui_yesno "Executar" "Confirme a execucao dos comandos exibidos."
 }
@@ -155,20 +229,23 @@ confirm_exec() {
 confirm_strong() {
   local title=$1 cmds=$2 ans
   show_text "CONFIRMAR - $title" \
-    "$cmds"$'\n\n'"ATENCAO: operacao destrutiva."$'\n'"Digite SIM na proxima tela para continuar." || return 1
+    $'== OPERACAO DESTRUTIVA ==\n\n'"$cmds"$'\n\n== CONFIRMACAO ==\n'"Digite SIM na proxima tela para continuar." || return 1
   ans=$(whiptail --backtitle "$BACKTITLE" --title "CONFIRMAR - $title" --inputbox \
     "Digite SIM para confirmar:" 10 "$UI_W" "" 3>&1 1>&2 2>&3) || return 1
   [[ $ans == SIM ]]
 }
 
 ui_yesno() {
+  local h=14
+  ((h > UI_H)) && h=$UI_H
   whiptail --backtitle "$BACKTITLE" --title "$1" --defaultno \
-    --yesno "$2" "$UI_H" "$UI_W"
+    --yesno "$2" "$h" "$UI_W"
 }
 
 confirm_batch() {
   local title=$1 text=$2 strong=$3 ans
-  show_text "CONFIRMAR - $title" "$text"$'\n\n'"Revise os comandos acima."$'\n'"$([[ $strong == 1 ]] && printf 'Operacao destrutiva: sera exigido SIM.' || printf 'A execucao sera paralela via TMUX.')" || return 1
+  show_text "CONFIRMAR BATCH - $title" \
+    "$text"$'\n\n== MODO ==\n'"$([[ $strong == 1 ]] && printf 'DESTRUTIVO: sera exigido SIM.' || printf 'Paralelo via TMUX.')"$'\n'"Revise os comandos acima antes de confirmar." || return 1
   if ((strong)); then
     ans=$(whiptail --backtitle "$BACKTITLE" --title "CONFIRMAR - $title" --inputbox \
       "Digite SIM para confirmar:" 10 "$UI_W" "" 3>&1 1>&2 2>&3) || return 1
@@ -335,12 +412,12 @@ detect_release() {
   else
     RHEL_LABEL="RHEL desconhecido"
   fi
-  BACKTITLE="RHEL Admin Manager | $RHEL_LABEL | $(hostname -s 2>/dev/null || hostname)"
+  BACKTITLE="  RHEL Admin Manager  |  $RHEL_LABEL  |  $(hostname -s 2>/dev/null || hostname)  "
 }
 
 check_release() {
   if ((RHEL_VER < 6 || RHEL_VER > 10)); then
-    ui_error "Release nao suportada" "Release detectada: $RELEASE_NAME\nEste script suporta RHEL 6, 7, 8, 9 e 10."
+    ui_error "Release nao suportada" "Release detectada: $RELEASE_NAME"$'\n'"Este script suporta RHEL 6, 7, 8, 9 e 10."
     return 1
   fi
 }
@@ -496,10 +573,24 @@ mountpoint_of() {
   if command -v findmnt >/dev/null 2>&1; then
     mp=$(findmnt -n -o TARGET "$dev" 2>/dev/null | head -n1)
   fi
+  if [[ -z $mp ]] && command -v lsblk >/dev/null 2>&1; then
+    mp=$(lsblk -no MOUNTPOINT "$dev" 2>/dev/null | awk 'NF {print; exit}')
+  fi
   if [[ -z $mp ]]; then
     mp=$(awk -v d="$dev" -v r="$real" '$1==d || $1==r {print $2; exit}' /proc/mounts)
   fi
   printf '%s' "$mp"
+}
+
+device_mounted() {
+  local dev=$1 mp mm
+  mp=$(mountpoint_of "$dev")
+  [[ -n $mp ]] && return 0
+  if command -v lsblk >/dev/null 2>&1; then
+    mm=$(lsblk -dn -o MAJ:MIN "$dev" 2>/dev/null | awk 'NR==1 {print $1}')
+    [[ -n $mm ]] && awk -v mm="$mm" '$3==mm {found=1} END {exit !found}' /proc/self/mountinfo && return 0
+  fi
+  return 1
 }
 
 mountpoint_used() {
@@ -508,6 +599,17 @@ mountpoint_used() {
     return 0
   fi
   awk -v m="$mp" '$2==m {found=1} END {exit !found}' /proc/mounts
+}
+
+in_swap() {
+  local dev=$1 real line
+  real=$(readlink -f "$dev" 2>/dev/null)
+  while read -r line _; do
+    [[ $line == Filename ]] && continue
+    [[ $line == "$dev" || $line == "$real" ]] && return 0
+    [[ $(readlink -f "$line" 2>/dev/null) == "$real" ]] && return 0
+  done < /proc/swaps
+  return 1
 }
 
 vg_free_bytes() {
@@ -546,16 +648,19 @@ select_vg() {
 select_lv() {
   need_bin lvs lvm2 || return 1
   local -a items=()
-  local vg lv size
-  while read -r vg lv size; do
+  local vg lv size attr
+  while read -r vg lv size attr; do
     [[ -n $vg && -n $lv ]] || continue
+    case ${attr:0:1} in
+      t|s|V) continue ;;
+    esac
     items+=("$vg/$lv" "$vg/$lv | $size")
-  done < <(lvs --noheadings -o vg_name,lv_name,lv_size 2>/dev/null)
+  done < <(lvs --noheadings -o vg_name,lv_name,lv_size,lv_attr 2>/dev/null)
   if ((${#items[@]} == 0)); then
-    ui_error "LVM" "Nenhum Logical Volume encontrado."
+    ui_error "LVM" "Nenhum Logical Volume simples encontrado (thin/snapshot sao omitidos)."
     return 1
   fi
-  show_menu "Selecionar LV" "Logical Volume:" "${items[@]}"
+  show_menu "Selecionar LV" "Logical Volume (thin/snapshot omitidos):" "${items[@]}"
 }
 
 select_device() {
@@ -628,7 +733,7 @@ create_lv() {
     return 1
   }
   while :; do
-    size=$(ask "Criar LV" "Tamanho do LV (ex.: 50G, 512M).\nEspaco livre em $vg: $((free / 1048576)) MB") || return 1
+    size=$(ask "Criar LV" "Tamanho do LV (ex.: 50G, 512M)."$'\n'"Espaco livre em $vg: $((free / 1048576)) MB") || return 1
     size=${size^^}
     valid_size "$size" || {
       ui_error "Tamanho invalido" "Use numero inteiro seguido de K, M, G ou T (ex.: 50G)."
@@ -636,7 +741,7 @@ create_lv() {
     }
     bytes=$(size_bytes "$size")
     ((bytes <= free)) && break
-    ui_error "Espaco insuficiente" "Solicitado: $size\nLivre no VG: $((free / 1048576)) MB"
+    ui_error "Espaco insuficiente" "Solicitado: $size"$'\n'"Livre no VG: $((free / 1048576)) MB"
   done
   fstype=$(select_fs) || return 1
   c1=(lvcreate -y -n "$name" -L "$size" "$vg")
@@ -689,7 +794,7 @@ extend_lv() {
     return 1
   }
   while :; do
-    size=$(ask "Estender LV" "Tamanho a adicionar (ex.: 10G).\nLivre em $vg: $((free / 1048576)) MB") || return 1
+    size=$(ask "Estender LV" "Tamanho a adicionar (ex.: 10G)."$'\n'"Livre em $vg: $((free / 1048576)) MB") || return 1
     size=${size^^}
     valid_size "$size" || {
       ui_error "Tamanho invalido" "Use numero inteiro seguido de K, M, G ou T."
@@ -697,7 +802,7 @@ extend_lv() {
     }
     bytes=$(size_bytes "$size")
     ((bytes <= free)) && break
-    ui_error "Espaco insuficiente" "Solicitado: $size\nLivre no VG: $((free / 1048576)) MB"
+    ui_error "Espaco insuficiente" "Solicitado: $size"$'\n'"Livre no VG: $((free / 1048576)) MB"
   done
   fstype=$(fs_type "$dev")
   mp=$(mountpoint_of "$dev")
@@ -750,9 +855,13 @@ create_fs_lv() {
     ui_error "LVM" "Dispositivo nao encontrado: $dev"
     return 1
   }
-  mp=$(mountpoint_of "$dev")
-  if [[ -n $mp ]]; then
-    ui_error "LV montado" "Desmonte $dev (montado em $mp) antes de formatar."
+  if device_mounted "$dev"; then
+    mp=$(mountpoint_of "$dev")
+    ui_error "LV montado" "Desmonte $dev${mp:+ (montado em $mp)} antes de formatar."
+    return 1
+  fi
+  if in_swap "$dev"; then
+    ui_error "LV em swap" "$dev esta em uso como swap. Desative antes de formatar."
     return 1
   fi
   old=$(fs_type "$dev")
@@ -786,9 +895,9 @@ mount_fs() {
     ui_error "File System" "Nenhum filesystem detectado em $dev."
     return 1
   }
-  mp_now=$(mountpoint_of "$dev")
-  if [[ -n $mp_now ]]; then
-    ui_error "Dispositivo montado" "$dev ja esta montado em $mp_now."
+  if device_mounted "$dev"; then
+    mp_now=$(mountpoint_of "$dev")
+    ui_error "Dispositivo montado" "$dev${mp_now:+ ja esta montado em $mp_now}."
     return 1
   fi
   while :; do
@@ -824,13 +933,13 @@ mount_fs() {
   backup="/etc/fstab.bak.$(date +%Y%m%d%H%M%S)"
   line="UUID=$uuid $mp $fstype defaults 0 0"
   append="printf '%s\\n' $(q "$line") >> /etc/fstab"
-  cmd_show="mkdir -p $(q "$mp")"$'\n'"mount $(q "$dev") $(q "$mp")"$'\n'"cp -a /etc/fstab $(q "$backup")"$'\n'"$append"
+  cmd_show="install -d -m 755 $(q "$mp")"$'\n'"mount $(q "$dev") $(q "$mp")"$'\n'"cp -a /etc/fstab $(q "$backup")"$'\n'"$append"
   if ((RHEL_VER >= 7)); then
     cmd_show+=$'\n'"systemctl daemon-reload"
   fi
   confirm_exec "Montar FS e atualizar fstab" "$cmd_show" \
     "Entrada fstab: $line"$'\n'"Backup: $backup"$'\n'"$(version_mount_note)" || return 0
-  if ! run_cmd mkdir -p "$mp"; then
+  if ! run_cmd install -d -m 755 "$mp"; then
     ui_error "Falha ao criar ponto" "A sequencia foi interrompida." "$RUN_OUT"
     return 1
   fi
@@ -855,6 +964,111 @@ mount_fs() {
     fi
   fi
   ui_ok "File System montado" "$dev montado em $mp."$'\n'"fstab: $line"
+}
+
+select_mounted_device() {
+  need_bin blkid util-linux || return 1
+  local -a items=()
+  local dev fs mp
+  while read -r dev; do
+    [[ -b $dev ]] || continue
+    mp=$(mountpoint_of "$dev")
+    [[ -n $mp ]] || continue
+    fs=$(fs_type "$dev")
+    items+=("$dev" "$dev | $fs | $mp")
+  done < <(blkid -o device 2>/dev/null | sort -u)
+  if ((${#items[@]} == 0)); then
+    ui_error "File Systems" "Nenhum filesystem montado detectado."
+    return 1
+  fi
+  show_menu "Selecionar dispositivo montado" "Dispositivo em uso:" "${items[@]}"
+}
+
+unmount_fs() {
+  local dev mp backup cmd_show remove_cmd awkprog has_fstab=0
+  dev=$(select_mounted_device) || return 1
+  mp=$(mountpoint_of "$dev")
+  if [[ -z $mp ]]; then
+    ui_error "File Systems" "$dev nao esta montado."
+    return 1
+  fi
+  case $mp in
+    /|/boot|/boot/efi|/usr|/var|/var/log|/var/lib|/etc|/dev|/proc|/sys|/run|/run/*)
+      ui_error "Operacao bloqueada" "Desmontar $mp nao e permitido por seguranca."
+      return 1
+      ;;
+  esac
+  backup="/etc/fstab.bak.$(date +%Y%m%d%H%M%S)"
+  if fstab_has_mp "$mp"; then
+    has_fstab=1
+  fi
+  cmd_show="umount $(q "$mp")"
+  if ((has_fstab)); then
+    awkprog='$1 !~ /^[[:space:]]*#/ && $2==mp {next} {print}'
+    remove_cmd="awk -v mp=$(q "$mp") $(q "$awkprog") /etc/fstab > /etc/fstab.rhel_admin.tmp"$'\n'
+    remove_cmd+="chmod --reference=/etc/fstab /etc/fstab.rhel_admin.tmp"$'\n'
+    remove_cmd+="mv /etc/fstab.rhel_admin.tmp /etc/fstab"
+    cmd_show+=$'\n'"cp -a /etc/fstab $(q "$backup")"$'\n'"$remove_cmd"
+    ((RHEL_VER >= 7)) && cmd_show+=$'\n'"systemctl daemon-reload"
+  fi
+  confirm_strong "Desmontar File System" "$cmd_show" \
+    "Dispositivo: $dev"$'\n'"Ponto: $mp"$'\n'"A remocao do fstab usa backup $backup." || return 0
+  if ! run_cmd umount "$mp"; then
+    ui_error "Falha ao desmontar" "A sequencia foi interrompida; o fstab nao foi alterado." "$RUN_OUT"
+    return 1
+  fi
+  if ((has_fstab)); then
+    if ! run_cmd cp -a /etc/fstab "$backup"; then
+      if run_cmd mount "$dev" "$mp" >/dev/null 2>&1; then
+        ui_error "Falha no backup do fstab" "O FS foi remontado." "$RUN_OUT"
+      else
+        ui_error "Falha no backup do fstab" "O FS permanece desmontado; monte manualmente." "$RUN_OUT"
+      fi
+      return 1
+    fi
+    if ! run_shell "$remove_cmd"; then
+      if run_cmd mount "$dev" "$mp" >/dev/null 2>&1; then
+        ui_error "Falha ao atualizar fstab" "O FS foi remontado; o backup esta em $backup." "$RUN_OUT"
+      else
+        ui_error "Falha ao atualizar fstab" "O FS permanece desmontado; monte manualmente. Backup: $backup" "$RUN_OUT"
+      fi
+      return 1
+    fi
+    if ((RHEL_VER >= 7)); then
+      if ! run_cmd systemctl daemon-reload; then
+        ui_error "fstab atualizado" "O FS foi desmontado, mas o daemon-reload falhou." "$RUN_OUT"
+        return 1
+      fi
+    fi
+  fi
+  ui_ok "File System desmontado" "$dev desmontado de $mp."$'\n'"$( ((has_fstab)) && printf 'Entrada removida do fstab com backup em %s.' "$backup" || printf 'Nao havia entrada no fstab.' )"
+}
+
+delete_lv() {
+  need_bin lvremove lvm2 || return 1
+  local sel dev mp
+  sel=$(select_lv) || return 1
+  dev="/dev/$sel"
+  [[ -b $dev ]] || {
+    ui_error "LVM" "Dispositivo nao encontrado: $dev"
+    return 1
+  }
+  if device_mounted "$dev"; then
+    mp=$(mountpoint_of "$dev")
+    ui_error "LV em uso" "$dev${mp:+ esta montado em $mp}. Desmonte antes de excluir."
+    return 1
+  fi
+  if in_swap "$dev"; then
+    ui_error "LV em swap" "$dev esta em uso como swap. Desative antes de excluir."
+    return 1
+  fi
+  confirm_strong "Excluir Logical Volume" "lvremove -f $(q "$dev")" \
+    "LV: $dev"$'\n'"Todos os dados e assinaturas deste LV serao removidos." || return 0
+  if ! run_cmd lvremove -f "$dev"; then
+    ui_error "Falha ao excluir LV" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  fi
+  ui_ok "LV excluido" "$dev removido."
 }
 
 network_interfaces() {
@@ -893,6 +1107,13 @@ find_nm_conn() {
   [[ -n $c ]] || c=$(nmcli -t -f NAME,DEVICE connection show 2>/dev/null |
     awk -F: -v d="$d" '$2==d {print $1; exit}')
   printf '%s' "$c"
+}
+
+nm_profile_is_slave() {
+  local conn=$1 master slave
+  master=$(nmcli -g connection.master connection show "$conn" 2>/dev/null)
+  slave=$(nmcli -g connection.slave-type connection show "$conn" 2>/dev/null)
+  [[ -n $master && $master != "--" ]] || [[ -n $slave && $slave != "--" ]]
 }
 
 read_network_form() {
@@ -961,6 +1182,10 @@ configure_nm() {
   local conn cmds extra
   local -a c_add=() c_mod c_up
   conn=$(find_nm_conn "$NET_IFACE")
+  if [[ -n $conn ]] && nm_profile_is_slave "$conn"; then
+    ui_error "Perfil slave" "$conn e slave de bond/bridge/team. Configure o perfil mestre, nao o slave."
+    return 1
+  fi
   cmds=""
   if [[ -z $conn ]]; then
     if special_iface "$NET_IFACE"; then
@@ -1101,6 +1326,7 @@ configure_hostname() {
     awkprog='BEGIN{done=0} $1 !~ /^#/ && ($2==fqdn || $2==short || $3==fqdn || $3==short) {if(!done){print ip, fqdn, short; done=1}; next} {print} END{if(!done) print ip, fqdn, short}'
     cmds+=$'\n'"cp -a /etc/hosts $(q "$hosts_backup")"$'\n'
     cmds+="awk -v ip=$(q "$ip") -v fqdn=$(q "$fqdn") -v short=$(q "$short") $(q "$awkprog") /etc/hosts > /etc/hosts.rhel_admin.tmp"$'\n'
+    cmds+="chmod --reference=/etc/hosts /etc/hosts.rhel_admin.tmp"$'\n'
     cmds+="mv /etc/hosts.rhel_admin.tmp /etc/hosts"
     outcome+=" /etc/hosts atualizado com $ip $fqdn $short."
   fi
@@ -1113,6 +1339,111 @@ configure_hostname() {
   cur=$(hostname 2>/dev/null)
   fq=$(hostname -f 2>/dev/null)
   ui_ok "Hostname atualizado" "Hostname atual: $cur"$'\n'"FQDN resolvido: ${fq:-nao resolvido}"$'\n\n'"$outcome"$'\n'"Reinicie servicos/aplicacoes dependentes do hostname."
+}
+
+network_details() {
+  need_bin ip iproute || return 1
+  local out
+  out="=== ENDERECOS IPv4 ==="$'\n'"$(ip -4 -o addr show 2>&1)"$'\n\n'
+  out+="=== ROTAS ==="$'\n'"$(ip route show 2>&1)"$'\n\n'
+  out+="=== NEIGHBORS / ARP ==="$'\n'"$(ip neigh show 2>&1)"$'\n\n'
+  out+="=== RESOLV.CONF ==="$'\n'"$(cat /etc/resolv.conf 2>&1)"
+  if command -v nmcli >/dev/null 2>&1; then
+    out+=$'\n\n'"=== NETWORKMANAGER DEVICE STATUS ==="$'\n'"$(nmcli device status 2>&1)"
+  fi
+  show_text "Rede - rotas, DNS e ARP" "$out"
+}
+
+dhcp_result() {
+  local iface=$1 ip
+  sleep 2
+  ip=$(ip -4 -o addr show dev "$iface" 2>/dev/null | awk 'NR==1 {print $4}')
+  if [[ -n $ip ]]; then
+    ui_ok "DHCP configurado" "Interface $iface obteve $ip."
+  else
+    ui_error "DHCP sem endereco" "A configuracao foi aplicada, mas $iface nao recebeu IPv4."
+  fi
+}
+
+configure_dhcp() {
+  local iface conn file backup content hw uuid cmds cmds_extra
+  local -a c_add=() c_mod c_up
+  if ((RHEL_VER >= 7)); then
+    need_bin nmcli NetworkManager || return 1
+    iface=$(select_iface) || return 1
+    conn=$(find_nm_conn "$iface")
+    if [[ -n $conn ]] && nm_profile_is_slave "$conn"; then
+      ui_error "Perfil slave" "$conn e slave de bond/bridge/team. Configure o perfil mestre."
+      return 1
+    fi
+    cmds=""
+    if [[ -z $conn ]]; then
+      if special_iface "$iface"; then
+        ui_error "Interface especial" "$iface nao tem perfil nmcli. Configure manualmente."
+        return 1
+      fi
+      conn="rhel-admin-$iface"
+      c_add=(nmcli connection add type ethernet ifname "$iface" con-name "$conn" autoconnect no)
+      cmds+=$(cmd_line "${c_add[@]}")$'\n'
+    fi
+    c_mod=(nmcli connection modify "$conn" ipv4.method auto ipv4.addresses "" ipv4.gateway ""
+      ipv4.dns "" ipv4.never-default no ipv4.ignore-auto-dns no connection.autoconnect yes)
+    c_up=(nmcli connection up "$conn")
+    cmds+=$(cmd_line "${c_mod[@]}")$'\n'$(cmd_line "${c_up[@]}")
+    cmds_extra="Interface: $iface | Conexao: $conn | Modo: DHCP"$'\n'"$(version_network_note)"$'\n'
+    cmds_extra+="A mudanca pode interromper a sessao SSH. Use console/IPMI."
+    confirm_exec "Configurar DHCP via nmcli" "$cmds" "$cmds_extra" || return 0
+    if ((${#c_add[@]} > 0)); then
+      if ! run_cmd "${c_add[@]}"; then
+        ui_error "Falha ao criar conexao" "A sequencia foi interrompida." "$RUN_OUT"
+        return 1
+      fi
+    fi
+    if ! run_cmd "${c_mod[@]}"; then
+      ui_error "Falha ao configurar DHCP" "A sequencia foi interrompida." "$RUN_OUT"
+      return 1
+    fi
+    if ! run_cmd "${c_up[@]}"; then
+      ui_error "Falha ao ativar conexao" "A configuracao foi gravada, mas a conexao nao foi ativada." "$RUN_OUT"
+      return 1
+    fi
+    dhcp_result "$iface"
+    return
+  fi
+  iface=$(select_iface) || return 1
+  file="/etc/sysconfig/network-scripts/ifcfg-$iface"
+  if special_iface "$iface"; then
+    ui_error "Interface especial" "$iface parece bond/bridge/team/VLAN. Operacao abortada."
+    return 1
+  fi
+  if [[ ! -f $file ]]; then
+    ui_error "ifcfg ausente" "Arquivo nao encontrado: $file"
+    return 1
+  fi
+  if grep -Eq '^(TYPE=(Bond|Bridge|Vlan|Team)|VLAN=|BRIDGE=|MASTER=|SLAVE=)' "$file"; then
+    ui_error "Interface gerenciada" "$file contem bond/bridge/VLAN. Operacao abortada."
+    return 1
+  fi
+  backup="$file.bak.$(date +%Y%m%d%H%M%S)"
+  hw=$(sed -n 's/^HWADDR=//p' "$file" 2>/dev/null | head -n1)
+  uuid=$(sed -n 's/^UUID=//p' "$file" 2>/dev/null | head -n1)
+  content=$(printf 'DEVICE=%s\nBOOTPROTO=dhcp\nONBOOT=yes\nTYPE=Ethernet\n' "$iface")
+  content+=$'\n'
+  [[ -n $hw ]] && content+="HWADDR=$hw"$'\n'
+  [[ -n $uuid ]] && content+="UUID=$uuid"$'\n'
+  content+="NM_CONTROLLED=no"
+  cmds="cp -a $(q "$file") $(q "$backup")"$'\n'
+  cmds+="cat > $(q "$file") <<'__RHEL_IFCFG_DHCP__'"$'\n'"$content"$'\n'"__RHEL_IFCFG_DHCP__"$'\n'
+  cmds+="chmod 644 $(q "$file")"$'\n'
+  cmds+="service network restart"
+  cmds_extra="Interface: $iface | Modo: DHCP | Backup: $backup"$'\n'"$(version_network_note)"$'\n'
+  cmds_extra+="A mudanca pode interromper a sessao SSH. Use console/IPMI."
+  confirm_exec "Configurar DHCP via ifcfg" "$cmds" "$cmds_extra" || return 0
+  if ! run_shell "$cmds"; then
+    ui_error "Falha ao configurar DHCP" "A sequencia foi interrompida. Backup: $backup" "$RUN_OUT"
+    return 1
+  fi
+  dhcp_result "$iface"
 }
 
 batch_path() {
@@ -1139,9 +1470,21 @@ batch_local_ready() {
 
 batch_inventory() {
   batch_path
-  local model cmds out i
+  local model cmds out i model_file
   if [[ ! $BATCH_SSH_USER =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
     ui_error "Usuario SSH local invalido" "Valor: ${BATCH_SSH_USER:-vazio}"
+    return 1
+  fi
+  if [[ ! $BATCH_DEFAULT_USER =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+    ui_error "Usuario remoto padrao invalido" "Valor: ${BATCH_DEFAULT_USER:-vazio}"
+    return 1
+  fi
+  if [[ -L $BATCH_FILE ]]; then
+    ui_error "Inventario inseguro" "$BATCH_FILE e um symlink. Remova antes de continuar."
+    return 1
+  fi
+  if [[ -e $BATCH_FILE && ! -f $BATCH_FILE ]]; then
+    ui_error "Inventario invalido" "$BATCH_FILE nao e um arquivo regular."
     return 1
   fi
   if [[ ! -f $BATCH_FILE ]]; then
@@ -1152,10 +1495,13 @@ batch_inventory() {
       "# Exemplos:" \
       "# $BATCH_DEFAULT_USER@10.0.0.10" \
       "# oracle@db02:2222")
-    cmds="cat > $(q "$BATCH_FILE") <<'__HOSTS_BATCH__'"$'\n'"$model"$'\n'"__HOSTS_BATCH__"$'\n'
+    model_file="$TMP_DIR/hosts.batch.model"
+    cmds="cat > $(q "$model_file") <<'__HOSTS_BATCH__'"$'\n'"$model"$'\n'"__HOSTS_BATCH__"$'\n'
+    cmds+="chmod 600 $(q "$model_file")"$'\n'
+    cmds+="mv -f $(q "$model_file") $(q "$BATCH_FILE")"$'\n'
     cmds+="chown $(q "$BATCH_SSH_USER") $(q "$BATCH_FILE")"$'\n'
     cmds+="chmod 600 $(q "$BATCH_FILE")"
-    confirm_exec "Criar inventario" "$cmds" "Arquivo: $BATCH_FILE | dono: $BATCH_SSH_USER" || return 0
+    confirm_exec "Criar inventario" "$cmds" "Arquivo: $BATCH_FILE | dono: $BATCH_SSH_USER" || return 1
     if ! run_shell "$cmds"; then
       ui_error "Falha ao criar inventario" "A operacao foi interrompida." "$RUN_OUT"
       return 1
@@ -1171,11 +1517,30 @@ batch_inventory() {
   show_text "Inventario batch" "$out"
 }
 
+batch_edit_inventory() {
+  batch_path
+  if [[ -L $BATCH_FILE ]]; then
+    ui_error "Inventario inseguro" "$BATCH_FILE e um symlink. Operacao bloqueada."
+    return 1
+  fi
+  [[ -f $BATCH_FILE ]] || {
+    batch_inventory || return 1
+  }
+  local ed=${EDITOR:-vi}
+  [[ $ed =~ ^[A-Za-z0-9_./-]+$ ]] || ed=vi
+  need_bin "$ed" "$ed" || return 1
+  "$ed" "$BATCH_FILE"
+}
+
 load_inventory() {
   batch_path
   BATCH_TARGETS=()
   BATCH_PORTS=()
   BATCH_NAMES=()
+  if [[ -L $BATCH_FILE ]]; then
+    ui_error "Inventario inseguro" "$BATCH_FILE e um symlink. Operacao bloqueada."
+    return 1
+  fi
   if [[ ! -r $BATCH_FILE ]]; then
     ui_error "Inventario ausente" "Arquivo nao encontrado: $BATCH_FILE"
     return 1
@@ -1233,7 +1598,6 @@ load_inventory() {
 }
 
 batch_test_ssh() {
-  need_bin ssh openssh-clients || return 1
   batch_local_ready || return 1
   load_inventory || return 1
   local i target port out rc st text ok=0 fail=0
@@ -1271,7 +1635,7 @@ batch_wrap_remote() {
   local remote=$1 need_root=$2 target=$3 user
   user=${target%%@*}
   if ((need_root)) && [[ $user != root ]]; then
-    printf 'sudo -n bash -c %s' "$(q "$remote")"
+    printf 'sudo -n bash -c %s' "$(sh_quote "$remote")"
   else
     printf '%s' "$remote"
   fi
@@ -1281,8 +1645,8 @@ batch_session_check() {
   tmux has-session -t "$BATCH_SESSION" 2>/dev/null || return 0
   local c
   c=$(show_menu "Sessao TMUX existente" "A sessao '$BATCH_SESSION' ja existe." \
-    attach "Anexar a sessao existente" \
-    new "Encerrar a sessao e iniciar novo lote" \
+    attach "[seguro] Anexar a sessao existente" \
+    new "[ATENCAO] Encerrar a sessao e iniciar novo lote" \
     0 "Cancelar") || return 1
   case $c in
     attach)
@@ -1321,7 +1685,7 @@ batch_dispatch() {
       display=$(cmd_line "${BATCH_SSH_PREFIX[@]}" -o ServerAliveInterval=30 -p "${BATCH_PORTS[$i]}" "${BATCH_TARGETS[$i]}")
     else
       wrapped=$(batch_wrap_remote "$remote" "$need_root" "${BATCH_TARGETS[$i]}")
-      display=$(cmd_line "${BATCH_SSH_PREFIX[@]}" -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 \
+      display=$(cmd_line "${BATCH_SSH_PREFIX[@]}" -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o StrictHostKeyChecking=yes \
         -p "${BATCH_PORTS[$i]}" "${BATCH_TARGETS[$i]}" "$wrapped")
     fi
     all_cmds+="$display"$'\n'
@@ -1340,8 +1704,10 @@ batch_dispatch() {
     return 1
   }
   chmod 700 "$BATCH_DIR"
-  printf '%s\n' "$BATCH_DIR" >"$BATCH_LAST_FILE" 2>/dev/null
-  chmod 600 "$BATCH_LAST_FILE" 2>/dev/null
+  if [[ ! -L $BATCH_LAST_FILE ]]; then
+    printf '%s\n' "$BATCH_DIR" >"$BATCH_LAST_FILE" 2>/dev/null
+    chmod 600 "$BATCH_LAST_FILE" 2>/dev/null
+  fi
   printf '%s\n' "$title" >"$BATCH_DIR/action.txt"
   : >"$BATCH_DIR/manifest.tsv"
   for ((i = 0; i < n; i++)); do
@@ -1397,7 +1763,7 @@ MON
       display=$(cmd_line "${BATCH_SSH_PREFIX[@]}" -o ServerAliveInterval=30 -p "$port" "$target")
     else
       wrapped=$(batch_wrap_remote "$remote" "$need_root" "$target")
-      display=$(cmd_line "${BATCH_SSH_PREFIX[@]}" -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 \
+      display=$(cmd_line "${BATCH_SSH_PREFIX[@]}" -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o StrictHostKeyChecking=yes \
         -p "$port" "$target" "$wrapped")
     fi
     {
@@ -1421,7 +1787,7 @@ BODY
 BODY
       else
         cat <<'BODY'
-"${sshcmd[@]}" -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -p "$port" "$target" "$remote" 2>&1 | tee "$outfile"
+"${sshcmd[@]}" -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o StrictHostKeyChecking=yes -p "$port" "$target" "$remote" 2>&1 | tee "$outfile"
 BODY
       fi
       cat <<'BODY'
@@ -1470,7 +1836,7 @@ BODY
 batch_report() {
   local dir=${BATCH_DIR:-}
   if [[ -z $dir || ! -d $dir ]]; then
-    [[ -r $BATCH_LAST_FILE ]] && dir=$(cat "$BATCH_LAST_FILE")
+    [[ -r $BATCH_LAST_FILE && ! -L $BATCH_LAST_FILE ]] && dir=$(cat "$BATCH_LAST_FILE")
   fi
   if [[ -z $dir || ! -d $dir || ! -r $dir/manifest.tsv ]]; then
     ui_error "Relatorio" "Nenhum lote encontrado. Execute um batch primeiro."
@@ -1529,14 +1895,14 @@ batch_report() {
 batch_patch() {
   local remote
   remote='if command -v dnf >/dev/null 2>&1; then dnf -y update; elif command -v yum >/dev/null 2>&1; then yum -y update; else echo "dnf/yum ausente"; exit 127; fi'
-  batch_dispatch "Atualizacao completa" "$remote" 1 0 0 \
+  batch_dispatch "Atualizacao completa" "$remote" 1 1 0 \
     "RHEL 6/7: yum | RHEL 8/9/10: dnf. Kernel novo pode exigir reboot." 
 }
 
 batch_security() {
   local remote
   remote='if command -v dnf >/dev/null 2>&1; then dnf -y update --security; elif command -v yum >/dev/null 2>&1; then yum -y update --security; else echo "dnf/yum ausente"; exit 127; fi'
-  batch_dispatch "Atualizacao de seguranca" "$remote" 1 0 0 \
+  batch_dispatch "Atualizacao de seguranca" "$remote" 1 1 0 \
     "Requer suporte a --security no gerenciador remoto; RHEL6/7 pode exigir yum-plugin-security."
 }
 
@@ -1602,31 +1968,33 @@ batch_kill_session() {
 batch_menu() {
   local c
   while :; do
-    c=$(show_menu "Batch / Frota (TMUX)" "Arquivo: $BATCH_FILE | SSH local: $BATCH_SSH_USER" \
-      1 "Inventario: criar / validar" \
-      2 "Testar SSH + sudo -n" \
-      3 "Atualizacao completa (yum/dnf)" \
-      4 "Atualizacao de seguranca" \
-      5 "Reiniciar hosts" \
-      6 "Coletar diagnostico" \
-      7 "Comando personalizado" \
-      8 "Abrir SSH interativo em TMUX" \
-      9 "Anexar sessao TMUX" \
-      10 "Relatorio do ultimo lote" \
-      11 "Encerrar sessao TMUX" \
+    c=$(show_menu "Batch / Frota (TMUX)" "Arquivo: $BATCH_FILE | SSH local: $BATCH_SSH_USER"$'\n'"Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
+      1 "[altera] Inventario: criar / validar" \
+      2 "[altera] Editar inventario" \
+      3 "[seguro] Testar SSH + sudo -n" \
+      4 "[ATENCAO] Atualizacao completa (yum/dnf)" \
+      5 "[ATENCAO] Atualizacao de seguranca" \
+      6 "[ATENCAO] Reiniciar hosts" \
+      7 "[seguro] Coletar diagnostico" \
+      8 "[ATENCAO] Comando personalizado" \
+      9 "[seguro] Abrir SSH interativo em TMUX" \
+      10 "[seguro] Anexar sessao TMUX" \
+      11 "[seguro] Relatorio do ultimo lote" \
+      12 "[ATENCAO] Encerrar sessao TMUX" \
       0 "Voltar") || return 0
     case $c in
       1) batch_inventory ;;
-      2) batch_test_ssh ;;
-      3) batch_patch ;;
-      4) batch_security ;;
-      5) batch_reboot ;;
-      6) batch_diag ;;
-      7) batch_custom ;;
-      8) batch_interactive ;;
-      9) batch_attach ;;
-      10) batch_report ;;
-      11) batch_kill_session ;;
+      2) batch_edit_inventory ;;
+      3) batch_test_ssh ;;
+      4) batch_patch ;;
+      5) batch_security ;;
+      6) batch_reboot ;;
+      7) batch_diag ;;
+      8) batch_custom ;;
+      9) batch_interactive ;;
+      10) batch_attach ;;
+      11) batch_report ;;
+      12) batch_kill_session ;;
       0) return 0 ;;
     esac
   done
@@ -1687,15 +2055,146 @@ list_disks() {
   show_text "Discos e particoes" "$out"
 }
 
+filesystem_usage() {
+  local out
+  out="=== ESPACO EM DISCO ==="$'\n'"$(df -hT 2>&1)"$'\n\n'
+  out+="=== INODES ==="$'\n'"$(df -i 2>&1)"
+  show_text "Uso de filesystems" "$out"
+}
+
+select_swap_device() {
+  local -a items=()
+  local dev
+  while read -r dev; do
+    [[ -b $dev ]] || continue
+    items+=("$dev" "$dev")
+  done < <(blkid -o device -t TYPE=swap 2>/dev/null | sort -u)
+  if ((${#items[@]} == 0)); then
+    ui_error "Swap" "Nenhum dispositivo swap encontrado. Crie com mkswap/lvcreate primeiro."
+    return 1
+  fi
+  show_menu "Selecionar swap" "Dispositivos swap:" "${items[@]}"
+}
+
+swap_status() {
+  local out
+  out="=== SWAP ATIVO ==="$'\n'"$(cat /proc/swaps 2>&1)"$'\n\n'
+  out+="=== MEMORIA ==="$'\n'"$(free -m 2>&1)"
+  show_text "Swap" "$out"
+}
+
+swap_toggle() {
+  local dev action=${1:-}
+  local -a c
+  dev=$(select_swap_device) || return 1
+  [[ -n $action ]] || {
+    if in_swap "$dev"; then action="off"; else action="on"; fi
+  }
+  if [[ $action == on ]]; then
+    if in_swap "$dev"; then
+      ui_error "Swap ativo" "$dev ja esta ativo."
+      return 1
+    fi
+    c=(swapon "$dev")
+    confirm_exec "Ativar swap" "$(cmd_line "${c[@]}")" "Dispositivo: $dev" || return 0
+  else
+    if ! in_swap "$dev"; then
+      ui_error "Swap inativo" "$dev nao esta ativo."
+      return 1
+    fi
+    c=(swapoff "$dev")
+    confirm_strong "Desativar swap" "$(cmd_line "${c[@]}")" \
+      "Dispositivo: $dev"$'\n'"Desativar swap pode causar pressao de memoria." || return 0
+  fi
+  run_cmd "${c[@]}" || {
+    ui_error "Falha no swap" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Swap atualizado" "$dev: $action concluido."
+}
+
+swap_menu() {
+  local c
+  while :; do
+    c=$(show_menu "Swap" "Gerenciamento de memoria swap" \
+      1 "[seguro] Status do swap" \
+      2 "[altera] Ativar dispositivo swap" \
+      3 "[ATENCAO] Desativar dispositivo swap" \
+      0 "Voltar") || return 0
+    case $c in
+      1) swap_status ;;
+      2) swap_toggle on ;;
+      3) swap_toggle off ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+storage_root_menu() {
+  local c
+  while :; do
+    c=$(show_menu "Armazenamento" "LVM, filesystems, discos e swap" \
+      1 "[altera] LVM e File Systems" \
+      2 "[altera] Discos, rescan e HBAs" \
+      3 "[altera] Swap" \
+      4 "[seguro] Uso de filesystems" \
+      0 "Voltar") || return 0
+    case $c in
+      1) lvm_menu ;;
+      2) storage_menu ;;
+      3) swap_menu ;;
+      4) filesystem_usage ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+storage_health() {
+  local out h name state speed
+  out="=== MULTIPATH ==="$'\n'
+  if command -v multipath >/dev/null 2>&1; then
+    out+="$(timeout 10 multipath -ll 2>&1)"
+  else
+    out+="multipath-tools nao instalado."
+  fi
+  out+=$'\n\n'"=== FIBRE CHANNEL HBAs ==="$'\n'
+  for h in /sys/class/fc_host/host*; do
+    [[ -e $h ]] || continue
+    name=${h##*/}
+    state=$(cat "$h/port_state" 2>/dev/null)
+    speed=$(cat "$h/speed" 2>/dev/null)
+    out+="$name | state=${state:-?} | speed=${speed:-?} | port=$(cat "$h/port_name" 2>/dev/null)"$'\n'
+  done
+  out+=$'\n'"=== SCSI HOSTS ==="$'\n'
+  for h in /sys/class/scsi_host/host*; do
+    [[ -e $h ]] || continue
+    out+="${h##*/} | proc=$(cat "$h/proc_name" 2>/dev/null)"$'\n'
+  done
+  out+=$'\n'"=== BLOCK DEVICES ==="$'\n'"$(lsblk 2>&1)"
+  show_text "Multipath e HBAs" "$out"
+}
+
+recent_logs() {
+  local out=""
+  if command -v journalctl >/dev/null 2>&1; then
+    out+="=== JOURNAL (ultimas 120) ==="$'\n'"$(journalctl -n 120 --no-pager 2>&1)"$'\n\n'
+  fi
+  if [[ -r /var/log/messages ]]; then
+    out+="=== /var/log/messages (ultimas 120) ==="$'\n'"$(tail -n 120 /var/log/messages 2>&1)"
+  fi
+  [[ -n $out ]] || out="Nenhum log acessivel."
+  show_text "Logs recentes" "$out"
+}
+
 diagnostics() {
   local out cpus
   cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || grep -c '^processor' /proc/cpuinfo)
-  out="=== HOST ===\n$(hostname 2>&1)"$'\n\n'
-  out+="=== UPTIME / CARGA ===\n$(uptime 2>&1)"$'\n\n'
-  out+="=== CPU ===\nNucleos online: $cpus"$'\n\n'
-  out+="=== MEMORIA (MB) ===\n$(free -m 2>&1)"$'\n\n'
-  out+="=== DISCOS ===\n$(df -hT 2>&1)"$'\n\n'
-  out+="=== TOP CPU ===\n$(ps -eo pid,user,pcpu,pmem,comm --sort=-pcpu 2>&1 | head -n 6)"
+  out="=== HOST ==="$'\n'"$(hostname 2>&1)"$'\n\n'
+  out+="=== UPTIME / CARGA ==="$'\n'"$(uptime 2>&1)"$'\n\n'
+  out+="=== CPU ==="$'\n'"Nucleos online: $cpus"$'\n\n'
+  out+="=== MEMORIA (MB) ==="$'\n'"$(free -m 2>&1)"$'\n\n'
+  out+="=== DISCOS ==="$'\n'"$(df -hT 2>&1)"$'\n\n'
+  out+="=== TOP CPU ==="$'\n'"$(ps -eo pid,user,pcpu,pmem,comm --sort=-pcpu 2>&1 | head -n 6)"
   show_text "Diagnostico" "$out"
 }
 
@@ -1734,15 +2233,1309 @@ service_status() {
   show_text "Servicos essenciais" "$out"
 }
 
+dashboard_text() {
+  local host kernel up load mem swap rootpct rootfree vgcount lvcount failed nics batch_count batch_state nm fs net out alerts selinux fw rule
+  host=$(hostname 2>/dev/null)
+  kernel=$(uname -r 2>/dev/null)
+  up=$(uptime 2>/dev/null | sed 's/^ *//;s/.* up //;s/,.*//')
+  load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
+  mem=$(free -m 2>/dev/null | awk '/^Mem:/ {if ($2 > 0) printf "%s/%s MB (%.0f%%)", $3, $2, ($3 * 100) / $2}')
+  swap=$(free -m 2>/dev/null | awk '/^Swap:/ {if ($2 > 0) printf "%s/%s MB", $3, $2; else printf "desativado"}')
+  rootpct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
+  rootfree=$(df -h / 2>/dev/null | awk 'NR==2 {print $4}')
+  vgcount=$(vgs --noheadings 2>/dev/null | wc -l)
+  lvcount=$(lvs --noheadings 2>/dev/null | wc -l)
+  if ((RHEL_VER >= 7)); then
+    failed=$(timeout 5 systemctl --failed --no-pager --plain 2>/dev/null | grep -c '\.service')
+  else
+    failed="n/d"
+  fi
+  nics=$(ls /sys/class/net 2>/dev/null | grep -vc '^lo$')
+  batch_count=0
+  [[ -r $BATCH_FILE && ! -L $BATCH_FILE ]] && batch_count=$(grep -vcE '^[[:space:]]*(#|$)' "$BATCH_FILE" 2>/dev/null)
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
+    batch_state="ativa"
+  else
+    batch_state="inativa"
+  fi
+  nm="n/d"
+  if command -v nmcli >/dev/null 2>&1; then
+    nm=$(timeout 3 nmcli -t -f RUNNING general 2>/dev/null)
+    [[ $nm == running ]] && nm="ativo" || nm="${nm:-n/d}"
+  fi
+  fs=$(version_fs_default)
+  net=$(version_network_backend)
+  selinux=$(getenforce 2>/dev/null)
+  [[ -n $selinux ]] || selinux="n/d"
+  fw="n/d"
+  if ((RHEL_VER >= 7)); then
+    fw=$(systemctl is-active firewalld 2>/dev/null)
+    [[ -n $fw ]] || fw="n/d"
+  elif timeout 3 service iptables status >/dev/null 2>&1; then
+    fw="ativo"
+  else
+    fw="inativo"
+  fi
+  alerts=""
+  [[ $rootpct =~ ^[0-9]+$ ]] && ((rootpct >= 80)) && alerts+="- Root FS em ${rootpct}%: avaliar espaco."$'\n'
+  [[ $failed =~ ^[0-9]+$ ]] && ((failed > 0)) && alerts+="- $failed servico(s) systemd em falha."$'\n'
+  [[ $batch_state == ativa ]] && alerts+="- Sessao batch TMUX ativa."$'\n'
+  [[ -z $alerts ]] && alerts="- Nenhum alerta critico detectado."$'\n'
+  rule=$(ui_rule)
+  out="$rule"
+  out+=$'\n'"  RHEL ADMIN MANAGER  -  DASHBOARD"
+  out+=$'\n'"$rule"
+  out+=$'\n'" HOST........: $host"
+  out+=$'\n'" RELEASE.....: $RHEL_LABEL | kernel $kernel"
+  out+=$'\n'" UPTIME......: $up"
+  out+=$'\n'" LOAD........: $load"
+  out+=$'\n'" MEMORIA.....: $mem"
+  out+=$'\n'" SWAP........: $swap"
+  out+=$'\n'" ROOT FS.....: ${rootpct:-?}% usado | ${rootfree:-?} livre"
+  out+=$'\n'" INTERFACES..: $nics | NetworkManager: $nm"
+  out+=$'\n'" SEGURANCA...: SELinux $selinux | firewall $fw"
+  out+=$'\n'" LVM.........: VGs=$vgcount | LVs=$lvcount"
+  out+=$'\n'" BATCH.......: $batch_count host(s) | sessao $batch_state"
+  out+=$'\n'"$rule"
+  out+=$'\n'" PERFIL DA VERSAO"
+  out+=$'\n'"   FS padrao..: $fs"
+  out+=$'\n'"   Rede.......: $net"
+  out+=$'\n'"   Atencao....: $(version_network_note)"
+  out+=$'\n'"$rule"
+  out+=$'\n'" ALERTAS"
+  out+=$'\n'"$alerts"
+  out+="$rule"
+  out+=$'\n'" AUDITORIA...: $LOG_FILE"
+  out+=$'\n'" BATCH LOGS..: /var/log/rhel_admin_manager.batch.*"
+  printf '%s\n' "$out"
+}
+
+dashboard() {
+  show_text "Dashboard - $RHEL_LABEL" "$(dashboard_text)"
+}
+
+log_errors() {
+  if [[ ! -r $LOG_FILE ]]; then
+    ui_error "Auditoria" "Log nao encontrado: $LOG_FILE"
+    return 1
+  fi
+  local out
+  out=$(grep -E 'status=(ERRO|ERRO_|FALHA)' "$LOG_FILE" 2>/dev/null | tail -n 200)
+  [[ -n $out ]] || out="Nenhum erro/falha encontrado no log."
+  show_text "Auditoria - erros e falhas" "$out"
+}
+
+log_recent() {
+  if [[ ! -r $LOG_FILE ]]; then
+    ui_error "Auditoria" "Log nao encontrado: $LOG_FILE"
+    return 1
+  fi
+  show_text "Auditoria - ultimas 200 linhas" "$(tail -n 200 "$LOG_FILE")"
+}
+
+log_status() {
+  local out
+  if [[ ! -e $LOG_FILE ]]; then
+    ui_error "Auditoria" "Log nao encontrado: $LOG_FILE"
+    return 1
+  fi
+  out="Arquivo..: $LOG_FILE"$'\n'"Permissoes: $(stat -c '%A %U:%G' "$LOG_FILE" 2>/dev/null)"$'\n'
+  out+="Linhas...: $(wc -l <"$LOG_FILE" 2>/dev/null)"$'\n'
+  out+="Tamanho..: $(du -h "$LOG_FILE" 2>/dev/null | awk '{print $1}')"$'\n\n'
+  out+="Ultima entrada:"$'\n'"$(tail -n 1 "$LOG_FILE" 2>/dev/null)"
+  show_text "Auditoria - status do log" "$out"
+}
+
+help_text() {
+  printf '%s\n' \
+    "RHEL ADMIN MANAGER - AJUDA RAPIDA" \
+    "" \
+    "EXECUCAO" \
+    "  sudo ./rhel_admin_manager.sh" \
+    "  Requer root, whiptail/newt, ssh, tmux e sudo para o modulo batch." \
+    "" \
+    "LEGENDA DOS MENUS" \
+    "  [seguro]  somente leitura / sem alteracao." \
+    "  [altera]  escrita controlada, com backup quando aplicavel." \
+    "  [ATENCAO] risco operacional, destrutivo ou impacto em SSH/servico." \
+    "" \
+    "CONFIRMACAO" \
+    "  Toda escrita mostra os comandos exatos em uma tela rolavel." \
+    "  Operacoes destrutivas exigem digitar SIM." \
+    "  Cada comando e registrado em $LOG_FILE." \
+    "" \
+    "LVM / FILE SYSTEMS" \
+    "  Permite visualizar, criar LV, estender LV+FS, formatar, montar com UUID," \
+    "  desmontar/remover fstab e excluir LV. Nao faz shrink nem criacao de PV/VG." \
+    "" \
+    "REDE" \
+    "  RHEL 6 usa ifcfg + service network. RHEL 7+ usa nmcli/NetworkManager." \
+    "  Modos: completo (gateway/DNS), heartbeat (sem gateway/DNS) e DHCP." \
+    "  Inclui hostname/hosts, rotas, DNS, ARP e teste ping/porta." \
+    "  Alterar IP pode derrubar a sessao SSH; use console/IPMI." \
+    "" \
+    "STORAGE / DIAGNOSTICO" \
+    "  LVM/FS, rescan SCSI/FC, discos, multipath/HBAs, swap, uso e logs." \
+    "" \
+    "USUARIOS / SERVICOS / PACOTES" \
+    "  Cria usuarios/grupos, senha, lock, grupos privilegiados e remocao." \
+    "  Gerencia systemctl/service, enable/disable, logs, cron/timers e kill." \
+    "  Instala, remove, atualiza, busca pacotes, security e subscription." \
+    "" \
+    "SEGURANCA / SISTEMA" \
+    "  Firewall: status em todas; alteracoes via firewalld no RHEL 7+." \
+    "  SELinux (modo/booleanos/AVC) e auditoria SSH sem editar sshd_config." \
+    "  Data/hora, timezone, NTP, sysctl, boot e reboot/shutdown." \
+    "" \
+    "LIMITES DELIBERADOS" \
+    "  Nao faz shrink, thin/snapshot, criacao/remocao de PV/VG ou particionamento." \
+    "  Nao edita sshd_config, bond/VLAN ou distribui chaves automaticamente." \
+    "  Nao cobre NFS, edicao de cron/timers, tuned/kdump, RAID ou registro de subscription." \
+    "  Essas operacoes exigem procedimento dedicado e console/IPMI." \
+    "" \
+    "PRODUCAO" \
+    "  ifcfg, fstab e hostname geram backup antes da alteracao." \
+    "  XFS nao encolhe e so cresce montado. ext4 cresce online/offline." \
+    "  RHEL 9/10 nao leem ifcfg; RHEL 8 usa keyfile via nmcli." \
+    "" \
+    "BATCH / TMUX" \
+    "  Inventario: $BATCH_FILE" \
+    "  Formato: [usuario@]host[:porta], um por linha." \
+    "  SSH local: $BATCH_SSH_USER. Acoes root remotas usam sudo -n (NOPASSWD)." \
+    "  BatchMode exige host key em known_hosts; use Testar SSH + sudo -n." \
+    "  O script valida confianca SSH, mas nao distribui chaves automaticamente." \
+    "  Nao use batch para alterar o IP da interface de gerencia." \
+    "  Relatorios e logs: /var/log/rhel_admin_manager.batch.*" \
+    "" \
+    "ATALHOS" \
+    "  Seta/Tab navegam. Enter seleciona. Cancelar/Voltar retorna." \
+    "  Use uma sessao tmux no jump host para sobreviver a quedas de SSH."
+}
+
+valid_user_name() {
+  [[ $1 =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
+valid_group_name() {
+  [[ $1 =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
+select_user() {
+  local -a items=()
+  local name uid home shell
+  while IFS=: read -r name _ uid _ _ home shell; do
+    [[ $name == root || $uid -ge 1000 ]] || continue
+    [[ $uid -lt 65534 ]] || continue
+    items+=("$name" "$name | uid=$uid | ${home:-?} | ${shell:-?}")
+  done < <(getent passwd)
+  if ((${#items[@]} == 0)); then
+    ui_error "Usuarios" "Nenhum usuario gerenciavel encontrado."
+    return 1
+  fi
+  show_menu "Selecionar usuario" "Usuarios locais (root e UID >= 1000):" "${items[@]}"
+}
+
+select_group() {
+  local -a items=()
+  local name gid members
+  while IFS=: read -r name _ gid members; do
+    items+=("$name" "$name | gid=$gid | membros=${members:-nenhum}")
+  done < <(getent group)
+  if ((${#items[@]} == 0)); then
+    ui_error "Grupos" "Nenhum grupo encontrado."
+    return 1
+  fi
+  show_menu "Selecionar grupo" "Grupos locais:" "${items[@]}"
+}
+
+users_overview() {
+  local out
+  out="=== USUARIOS (root + UID >= 1000) ==="$'\n'
+  out+="$(getent passwd | awk -F: '$1=="root" || ($3>=1000 && $3<65534) {printf "%-20s uid=%-6s home=%-24s shell=%s\n",$1,$3,$6,$7}' 2>&1)"$'\n\n'
+  out+="=== GRUPOS COM MEMBROS ==="$'\n'
+  out+="$(getent group | awk -F: '$4!="" {printf "%-20s gid=%-6s %s\n",$1,$3,$4}' 2>&1)"$'\n\n'
+  out+="=== USUARIOS LOGADOS ==="$'\n'"$(who 2>&1)"$'\n\n'
+  out+="=== ULTIMOS LOGINS ==="$'\n'"$(last -n 10 2>&1)"
+  show_text "Usuarios e grupos" "$out"
+}
+
+create_user() {
+  need_bin useradd shadow-utils || return 1
+  local user shell groups g gcsv
+  local -a gl=()
+  while :; do
+    user=$(ask "Criar usuario" "Nome do usuario (minusculo, sem espacos):") || return 1
+    valid_user_name "$user" && ! getent passwd "$user" >/dev/null && break
+    ui_error "Usuario invalido" "Use letras minusculas, numeros, _ ou -; o usuario nao pode existir."
+  done
+  shell=$(ask "Criar usuario" "Shell:" "/bin/bash") || return 1
+  [[ -n $shell ]] || shell="/bin/bash"
+  if [[ $shell != /* || ! -x $shell ]]; then
+    ui_error "Shell invalido" "Informe um shell absoluto e executavel."
+    return 1
+  fi
+  groups=$(ask "Criar usuario" "Grupos adicionais (virgula, opcional):") || return 1
+  groups=${groups//,/ }
+  for g in $groups; do
+    if ! valid_group_name "$g" || ! getent group "$g" >/dev/null; then
+      ui_error "Grupo invalido" "Grupo nao encontrado: $g"
+      return 1
+    fi
+    gl+=("$g")
+  done
+  gcsv=""
+  ((${#gl[@]} > 0)) && gcsv=$(IFS=,; printf '%s' "${gl[*]}")
+  local -a cmd=(useradd -m -s "$shell")
+  [[ -n $gcsv ]] && cmd+=(-G "$gcsv")
+  cmd+=("$user")
+  confirm_exec "Criar usuario" "$(cmd_line "${cmd[@]}")" \
+    "Usuario: $user | Home: /home/$user | Shell: $shell${gcsv:+ | Grupos: $gcsv}"$'\n'"A senha deve ser definida depois em Usuarios > Definir senha." || return 0
+  if ! run_cmd "${cmd[@]}"; then
+    ui_error "Falha ao criar usuario" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  fi
+  ui_ok "Usuario criado" "Usuario $user criado."$'\n'"Defina a senha no menu Usuarios."
+}
+
+run_tty_cmd() {
+  local preview rc
+  preview=$(printf '%q ' "$@")
+  clear
+  printf 'Executando: %s\n\n' "$preview"
+  log_event INICIO 0 "$preview"
+  "$@"
+  rc=$?
+  if ((rc == 0)); then
+    log_event SUCESSO 0 "$preview"
+  else
+    log_event ERRO "$rc" "$preview"
+  fi
+  printf '\nPressione Enter para voltar ao painel...'
+  read -r
+  return "$rc"
+}
+
+user_set_password() {
+  need_bin passwd shadow-utils || return 1
+  local user
+  user=$(select_user) || return 1
+  [[ $user == root ]] && {
+    ui_error "Operacao bloqueada" "Alterar a senha de root nao e permitido por este menu."
+    return 1
+  }
+  confirm_exec "Definir senha" "passwd $(q "$user")" \
+    "A senha sera solicitada no terminal. Ela nao sera registrada no log." || return 0
+  if ! run_tty_cmd passwd "$user"; then
+    ui_error "Falha ao definir senha" "A operacao foi interrompida." "Veja a saida no terminal."
+    return 1
+  fi
+  ui_ok "Senha atualizada" "Senha de $user atualizada."
+}
+
+user_expire_password() {
+  need_bin chage shadow-utils || return 1
+  local user
+  user=$(select_user) || return 1
+  [[ $user == root ]] && {
+    ui_error "Operacao bloqueada" "Forcar troca de senha de root nao e permitido."
+    return 1
+  }
+  confirm_exec "Forcar troca de senha" "chage -d 0 $(q "$user")" \
+    "O usuario $user devera trocar a senha no proximo login." || return 0
+  run_cmd chage -d 0 "$user" || {
+    ui_error "Falha" "Nao foi possivel forcar a troca de senha." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Troca forcada" "Proximo login de $user exigira nova senha."
+}
+
+user_lock_toggle() {
+  need_bin passwd shadow-utils || return 1
+  local user action cmd
+  user=$(select_user) || return 1
+  [[ $user == root ]] && {
+    ui_error "Operacao bloqueada" "Bloquear/desbloquear root nao e permitido."
+    return 1
+  }
+  action=$(show_menu "Conta de $user" "Selecione a acao:" \
+    lock "[altera] Bloquear conta" \
+    unlock "[altera] Desbloquear conta") || return 1
+  if [[ $action == lock ]]; then
+    cmd=(passwd -l "$user")
+  else
+    cmd=(passwd -u "$user")
+  fi
+  confirm_exec "Conta de usuario" "$(cmd_line "${cmd[@]}")" "Usuario: $user" || return 0
+  run_cmd "${cmd[@]}" || {
+    ui_error "Falha na conta" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Conta atualizada" "Acao '$action' aplicada em $user."
+}
+
+user_add_group() {
+  need_bin usermod shadow-utils || return 1
+  local user group extra
+  user=$(select_user) || return 1
+  group=$(select_group) || return 1
+  extra="Usuario: $user | Grupo: $group"$'\n'"O usuario deve relogar para o novo grupo valer."
+  case $group in
+    root|wheel|sudo|adm)
+      extra+=$'\n'"ATENCAO: grupo privilegiado; isso pode conceder acesso administrativo."
+      confirm_strong "Adicionar a grupo privilegiado" "usermod -aG $(q "$group") $(q "$user")" "$extra" || return 0
+      ;;
+    *)
+      confirm_exec "Adicionar usuario a grupo" "usermod -aG $(q "$group") $(q "$user")" "$extra" || return 0
+      ;;
+  esac
+  run_cmd usermod -aG "$group" "$user" || {
+    ui_error "Falha ao adicionar grupo" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Grupo adicionado" "$user agora pertence a $group (efetivo no proximo login)."
+}
+
+delete_user() {
+  need_bin userdel shadow-utils || return 1
+  local user
+  user=$(select_user) || return 1
+  if [[ $user == root ]]; then
+    ui_error "Operacao bloqueada" "Excluir root nao e permitido."
+    return 1
+  fi
+  if pgrep -u "$user" >/dev/null 2>&1; then
+    ui_error "Usuario em uso" "Existem processos ativos de $user. Encerre-os antes de excluir."
+    return 1
+  fi
+  confirm_strong "Excluir usuario" "userdel -r $(q "$user")" \
+    "Usuario: $user"$'\n'"O home, mail spool e arquivos do usuario serao removidos." || return 0
+  run_cmd userdel -r "$user" || {
+    ui_error "Falha ao excluir usuario" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Usuario excluido" "$user removido."
+}
+
+create_group() {
+  need_bin groupadd shadow-utils || return 1
+  local group
+  while :; do
+    group=$(ask "Criar grupo" "Nome do grupo:") || return 1
+    valid_group_name "$group" && ! getent group "$group" >/dev/null && break
+    ui_error "Grupo invalido" "Use letras minusculas, numeros, _ ou -; o grupo nao pode existir."
+  done
+  confirm_exec "Criar grupo" "groupadd $(q "$group")" "Grupo: $group" || return 0
+  run_cmd groupadd "$group" || {
+    ui_error "Falha ao criar grupo" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Grupo criado" "Grupo $group criado."
+}
+
+delete_group() {
+  need_bin groupdel shadow-utils || return 1
+  local group gid
+  group=$(select_group) || return 1
+  gid=$(getent group "$group" 2>/dev/null | cut -d: -f3)
+  if [[ $group == root || ${gid:-0} -lt 1000 ]]; then
+    ui_error "Operacao bloqueada" "Excluir grupo de sistema nao e permitido."
+    return 1
+  fi
+  confirm_strong "Excluir grupo" "groupdel $(q "$group")" \
+    "Grupo: $group"$'\n'"O grupo deve estar sem usuarios associados como grupo primario." || return 0
+  run_cmd groupdel "$group" || {
+    ui_error "Falha ao excluir grupo" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Grupo excluido" "Grupo $group removido."
+}
+
+users_menu() {
+  local c
+  while :; do
+    c=$(show_menu "Usuarios e Grupos" "Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
+      1 "[seguro] Visao geral de usuarios e grupos" \
+      2 "[altera] Criar usuario" \
+      3 "[altera] Definir senha (interativo)" \
+      4 "[altera] Forcar troca de senha" \
+      5 "[altera] Adicionar usuario a grupo" \
+      6 "[altera] Bloquear / desbloquear conta" \
+      7 "[altera] Criar grupo" \
+      8 "[ATENCAO] Excluir usuario" \
+      9 "[ATENCAO] Excluir grupo" \
+      0 "Voltar") || return 0
+    case $c in
+      1) users_overview ;;
+      2) create_user ;;
+      3) user_set_password ;;
+      4) user_expire_password ;;
+      5) user_add_group ;;
+      6) user_lock_toggle ;;
+      7) create_group ;;
+      8) delete_user ;;
+      9) delete_group ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+service_backend() {
+  if ((RHEL_VER >= 7)); then
+    printf 'systemctl'
+  else
+    printf 'service/chkconfig'
+  fi
+}
+
+select_service() {
+  local -a items=()
+  local svc
+  if ((RHEL_VER >= 7)); then
+    while read -r svc; do
+      [[ $svc =~ ^[A-Za-z0-9@_.:-]+$ ]] && items+=("$svc" "$svc")
+    done < <(systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null | awk '{print $1}' | sed 's/\.service$//' | sort -u)
+  else
+    while read -r svc; do
+      [[ $svc =~ ^[A-Za-z0-9@_.:-]+$ ]] && items+=("$svc" "$svc")
+    done < <({ chkconfig --list 2>/dev/null | awk '{print $1}'; ls /etc/init.d 2>/dev/null; } | sort -u)
+  fi
+  if ((${#items[@]} == 0)); then
+    ui_error "Servicos" "Nenhum servico encontrado."
+    return 1
+  fi
+  show_menu "Selecionar servico" "Backend: $(service_backend)" "${items[@]}"
+}
+
+service_failed() {
+  local out
+  if ((RHEL_VER >= 7)); then
+    out=$(systemctl --failed --no-pager 2>&1)
+  else
+    out=$(timeout 15 service --status-all 2>&1 | grep -iE 'stopped|failed|dead' || true)
+    [[ -n $out ]] || out="Nenhum servico parado/falho detectado."
+  fi
+  show_text "Servicos com falha" "$out"
+}
+
+manage_service() {
+  local svc action cmd extra
+  local -a c
+  svc=$(select_service) || return 1
+  action=$(show_menu "Gerenciar $svc" "Backend: $(service_backend)" \
+    status "[seguro] Status" \
+    logs "[seguro] Logs recentes do servico" \
+    start "[altera] Iniciar" \
+    stop "[ATENCAO] Parar" \
+    restart "[ATENCAO] Reiniciar" \
+    reload "[altera] Recarregar" \
+    enable "[altera] Habilitar no boot" \
+    disable "[ATENCAO] Desabilitar no boot") || return 1
+  if [[ $action == status ]]; then
+    if ((RHEL_VER >= 7)); then
+      show_text "Status - $svc" "$(systemctl status "$svc" --no-pager 2>&1)"
+    else
+      show_text "Status - $svc" "$(service "$svc" status 2>&1)"
+    fi
+    return 0
+  fi
+  if [[ $action == logs ]]; then
+    if ((RHEL_VER >= 7)); then
+      show_text "Logs - $svc" "$(journalctl -u "$svc" -n 120 --no-pager 2>&1)"
+    else
+      show_text "Logs - $svc" "$(grep -i "$svc" /var/log/messages 2>/dev/null | tail -n 120)"
+    fi
+    return 0
+  fi
+  if ((RHEL_VER >= 7)); then
+    c=(systemctl "$action" "$svc")
+  elif [[ $action == enable || $action == disable ]]; then
+    c=(chkconfig "$svc" "$([[ $action == enable ]] && printf on || printf off)")
+  else
+    c=(service "$svc" "$action")
+  fi
+  extra="Servico: $svc | Acao: $action"
+  case $svc in
+    sshd|sshd.service|network|NetworkManager|firewalld)
+      extra+=$'\n'"ATENCAO: este servico pode afetar acesso remoto ou conectividade."
+      ;;
+  esac
+  if [[ $action == stop || $action == restart || $action == disable ]]; then
+    confirm_strong "Servico $svc" "$(cmd_line "${c[@]}")" "$extra" || return 0
+  else
+    confirm_exec "Servico $svc" "$(cmd_line "${c[@]}")" "$extra" || return 0
+  fi
+  run_cmd "${c[@]}" || {
+    ui_error "Falha no servico" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Servico atualizado" "$svc: $action concluido."
+}
+
+select_process() {
+  local -a items=()
+  local pid user cpu mem comm
+  while read -r pid user cpu mem comm; do
+    [[ $pid =~ ^[0-9]+$ ]] || continue
+    items+=("$pid" "$pid | $user | cpu=${cpu}% | mem=${mem}% | $comm")
+  done < <(ps -eo pid,user,pcpu,pmem,comm 2>/dev/null | tail -n +2 | sort -k3 -nr | head -n 40)
+  if ((${#items[@]} == 0)); then
+    ui_error "Processos" "Nenhum processo encontrado."
+    return 1
+  fi
+  items+=("manual" "Informar PID manualmente")
+  show_menu "Selecionar processo" "Top processos por CPU:" "${items[@]}"
+}
+
+top_processes() {
+  local out
+  out="=== TOP CPU ==="$'\n'"$(ps -eo pid,user,pcpu,pmem,etime,comm 2>/dev/null | tail -n +2 | sort -k3 -nr | head -n 20)"$'\n\n'
+  out+="=== TOP MEMORIA ==="$'\n'"$(ps -eo pid,user,pcpu,pmem,etime,comm 2>/dev/null | tail -n +2 | sort -k4 -nr | head -n 20)"
+  show_text "Processos" "$out"
+}
+
+kill_process() {
+  local pid sig
+  local -a c
+  pid=$(select_process) || return 1
+  if [[ $pid == manual ]]; then
+    pid=$(ask "PID manual" "Informe o PID:") || return 1
+  fi
+  [[ $pid =~ ^[0-9]+$ ]] || {
+    ui_error "PID invalido" "PID: $pid"
+    return 1
+  }
+  if ((pid == 1)); then
+    ui_error "Operacao bloqueada" "Encerrar PID 1 nao e permitido."
+    return 1
+  fi
+  if ! kill -0 "$pid" 2>/dev/null; then
+    ui_error "Processo ausente" "PID $pid nao existe mais."
+    return 1
+  fi
+  sig=$(show_menu "Sinal para PID $pid" "Escolha o sinal:" \
+    TERM "[altera] SIGTERM (encerramento gracioso)" \
+    KILL "[ATENCAO] SIGKILL (forcado)") || return 1
+  c=(kill -"$sig" "$pid")
+  confirm_strong "Encerrar processo" "$(cmd_line "${c[@]}")" \
+    "PID: $pid"$'\n'"SIGKILL pode causar perda de dados no processo." || return 0
+  run_cmd "${c[@]}" || {
+    ui_error "Falha ao encerrar processo" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Processo sinalizado" "PID $pid recebeu SIG$sig."
+}
+
+scheduled_jobs() {
+  local out
+  out="=== CRONTAB ROOT ==="$'\n'"$(crontab -l 2>&1)"$'\n\n'
+  out+="=== /etc/cron.d ==="$'\n'"$(ls -l /etc/cron.d 2>&1)"$'\n\n'
+  if ((RHEL_VER >= 7)); then
+    out+="=== SYSTEMD TIMERS ==="$'\n'"$(systemctl list-timers --all --no-pager 2>&1)"
+  else
+    out+="=== CRON ==="$'\n'"$(service crond status 2>&1)"
+  fi
+  show_text "Cron e timers" "$out"
+}
+
+services_menu() {
+  local c
+  while :; do
+    c=$(show_menu "Servicos e Processos" "Backend: $(service_backend) | Legenda: [seguro] [altera] [ATENCAO]" \
+      1 "[seguro] Status de servicos essenciais" \
+      2 "[seguro] Servicos com falha" \
+      3 "[altera] Gerenciar servico (start/stop/enable)" \
+      4 "[seguro] Top processos (CPU/memoria)" \
+      5 "[ATENCAO] Encerrar processo" \
+      6 "[seguro] Cron e systemd timers" \
+      0 "Voltar") || return 0
+    case $c in
+      1) service_status ;;
+      2) service_failed ;;
+      3) manage_service ;;
+      4) top_processes ;;
+      5) kill_process ;;
+      6) scheduled_jobs ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+pkg_backend() {
+  if command -v dnf >/dev/null 2>&1; then
+    printf 'dnf'
+  elif command -v yum >/dev/null 2>&1; then
+    printf 'yum'
+  else
+    return 1
+  fi
+}
+
+pkg_repos() {
+  local pkg
+  pkg=$(pkg_backend) || {
+    ui_error "Pacotes" "dnf/yum nao encontrado."
+    return 1
+  }
+  show_text "Repositorios - $pkg" "$("$pkg" repolist 2>&1)"
+}
+
+pkg_updates() {
+  local pkg out rc
+  pkg=$(pkg_backend) || {
+    ui_error "Pacotes" "dnf/yum nao encontrado."
+    return 1
+  }
+  out=$("$pkg" check-update 2>&1)
+  rc=$?
+  if ((rc == 0)); then
+    out="Nenhuma atualizacao disponivel."
+  elif ((rc == 100)); then
+    :
+  else
+    out="Falha ao consultar atualizacoes (rc=$rc):"$'\n'"$out"
+  fi
+  show_text "Atualizacoes disponiveis" "$out"
+}
+
+pkg_update_all() {
+  local pkg
+  local -a c
+  pkg=$(pkg_backend) || return 1
+  c=("$pkg" -y update)
+  confirm_strong "Atualizar todos os pacotes" "$(cmd_line "${c[@]}")" \
+    "Pode atualizar kernel e exigir reboot. Valide janela de manutencao." || return 0
+  run_cmd "${c[@]}" || {
+    ui_error "Falha na atualizacao" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Atualizacao concluida" "Pacotes atualizados. Verifique se ha kernel novo e reboot pendente."
+}
+
+pkg_security() {
+  local pkg
+  local -a c
+  pkg=$(pkg_backend) || return 1
+  c=("$pkg" -y update --security)
+  confirm_strong "Atualizacoes de seguranca" "$(cmd_line "${c[@]}")" \
+    "Requer suporte a --security no gerenciador. RHEL 6/7 pode exigir yum-plugin-security." || return 0
+  run_cmd "${c[@]}" || {
+    ui_error "Falha no security update" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Security update concluido" "Atualizacoes de seguranca aplicadas."
+}
+
+pkg_install() {
+  local pkg name
+  local -a c
+  pkg=$(pkg_backend) || return 1
+  while :; do
+    name=$(ask "Instalar pacote" "Nome do pacote (ou grupo @nome):") || return 1
+    [[ $name =~ ^@?[A-Za-z0-9][A-Za-z0-9._+:-]*$ ]] && break
+    ui_error "Nome invalido" "Informe um nome de pacote valido."
+  done
+  c=("$pkg" -y install "$name")
+  confirm_exec "Instalar pacote" "$(cmd_line "${c[@]}")" "Pacote: $name" || return 0
+  run_cmd "${c[@]}" || {
+    ui_error "Falha ao instalar" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Pacote instalado" "$name instalado."
+}
+
+pkg_remove() {
+  local pkg name extra
+  local -a c
+  pkg=$(pkg_backend) || return 1
+  while :; do
+    name=$(ask "Remover pacote" "Nome do pacote:") || return 1
+    [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._+:-]*$ ]] && break
+    ui_error "Nome invalido" "Informe um nome de pacote valido."
+  done
+  c=("$pkg" -y remove "$name")
+  extra="Pacote: $name"
+  case $name in
+    kernel*|glibc*|systemd*|openssl*|grub*|shim*)
+      extra+=$'\n'"ATENCAO: remover este pacote pode impedir boot ou quebrar o sistema."
+      ;;
+  esac
+  confirm_strong "Remover pacote" "$(cmd_line "${c[@]}")" "$extra" || return 0
+  run_cmd "${c[@]}" || {
+    ui_error "Falha ao remover" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Pacote removido" "$name removido."
+}
+
+pkg_search() {
+  local pkg term
+  pkg=$(pkg_backend) || return 1
+  term=$(ask "Buscar pacote" "Termo de busca:") || return 1
+  [[ $term =~ ^[A-Za-z0-9] ]] || {
+    ui_error "Busca invalida" "O termo deve iniciar com letra ou numero."
+    return 1
+  }
+  show_text "Busca - $term" "$("$pkg" search "$term" 2>&1)"
+}
+
+pkg_info() {
+  local pkg name
+  pkg=$(pkg_backend) || return 1
+  name=$(ask "Informacoes do pacote" "Nome do pacote:") || return 1
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._+:-]*$ ]] || {
+    ui_error "Nome invalido" "Informe um nome de pacote valido."
+    return 1
+  }
+  show_text "Pacote - $name" "$("$pkg" info "$name" 2>&1)"
+}
+
+pkg_history() {
+  local pkg
+  pkg=$(pkg_backend) || return 1
+  show_text "Historico de pacotes" "$("$pkg" history 2>&1)"
+}
+
+pkg_subscription() {
+  local out
+  if ! command -v subscription-manager >/dev/null 2>&1; then
+    ui_error "Subscription Manager" "subscription-manager nao instalado."
+    return 1
+  fi
+  out="=== STATUS ==="$'\n'"$(subscription-manager status 2>&1)"$'\n\n'
+  out+="=== IDENTIDADE ==="$'\n'"$(subscription-manager identity 2>&1)"$'\n\n'
+  out+="=== REPOSITORIOS HABILITADOS ==="$'\n'"$(subscription-manager repos --list-enabled 2>&1)"
+  show_text "Subscription Manager" "$out"
+}
+
+packages_menu() {
+  local c pkg
+  pkg=$(pkg_backend 2>/dev/null || printf 'n/d')
+  while :; do
+    c=$(show_menu "Pacotes e Atualizacoes" "Backend: $pkg | Legenda: [seguro] [altera] [ATENCAO]" \
+      1 "[seguro] Repositorios configurados" \
+      2 "[seguro] Atualizacoes disponiveis" \
+      3 "[seguro] Historico de transacoes" \
+      4 "[seguro] Buscar pacote" \
+      5 "[seguro] Informacoes de pacote" \
+      6 "[altera] Instalar pacote" \
+      7 "[ATENCAO] Remover pacote" \
+      8 "[ATENCAO] Atualizar todos os pacotes" \
+      9 "[ATENCAO] Atualizacoes de seguranca" \
+      10 "[seguro] Subscription Manager (status)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) pkg_repos ;;
+      2) pkg_updates ;;
+      3) pkg_history ;;
+      4) pkg_search ;;
+      5) pkg_info ;;
+      6) pkg_install ;;
+      7) pkg_remove ;;
+      8) pkg_update_all ;;
+      9) pkg_security ;;
+      10) pkg_subscription ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+firewall_status() {
+  local out
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    out="=== FIREWALLD ==="$'\n'"$(firewall-cmd --state 2>&1)"$'\n\n'
+    out+="=== ZONAS ATIVAS ==="$'\n'"$(firewall-cmd --get-active-zones 2>&1)"$'\n\n'
+    out+="=== CONFIGURACAO DA ZONA PADRAO ==="$'\n'"$(firewall-cmd --list-all 2>&1)"
+  elif command -v iptables >/dev/null 2>&1; then
+    out="=== IPTABLES ==="$'\n'"$(iptables -L -n -v 2>&1)"
+  else
+    out="Nenhum backend de firewall encontrado."
+  fi
+  show_text "Firewall" "$out"
+}
+
+firewall_change() {
+  local action svc port p proto extra
+  local -a c1 c2
+  if ((RHEL_VER < 7)); then
+    ui_error "Firewall" "Alteracoes automaticas de firewall sao suportadas apenas no RHEL 7+ (firewalld)."
+    return 1
+  fi
+  need_bin firewall-cmd firewalld || return 1
+  if ! firewall-cmd --state >/dev/null 2>&1; then
+    ui_error "Firewall" "firewalld nao esta em execucao."
+    return 1
+  fi
+  action=$(show_menu "Alterar firewall" "Acoes via firewalld permanente + reload:" \
+    add-service "[altera] Adicionar servico" \
+    remove-service "[ATENCAO] Remover servico" \
+    add-port "[altera] Adicionar porta" \
+    remove-port "[ATENCAO] Remover porta" \
+    reload "[altera] Recarregar regras") || return 1
+  extra=""
+  case $action in
+    add-service|remove-service)
+      svc=$(ask "Firewall" "Nome do servico (ex.: http, https, ssh):") || return 1
+      [[ $svc =~ ^[A-Za-z0-9_-]+$ ]] || {
+        ui_error "Servico invalido" "Informe um nome de servico valido."
+        return 1
+      }
+      c1=(firewall-cmd --permanent --"$action=$svc")
+      c2=(firewall-cmd --reload)
+      extra="Servico: $svc"
+      [[ $svc == ssh && $action == remove-service ]] && extra+=$'\n'"ATENCAO: remover ssh pode bloquear o acesso remoto."
+      ;;
+    add-port|remove-port)
+      port=$(ask "Firewall" "Porta/protocolo (ex.: 8080/tcp):") || return 1
+      [[ $port =~ ^([0-9]{1,5})/(tcp|udp)$ ]] || {
+        ui_error "Porta invalida" "Use o formato porta/tcp ou porta/udp."
+        return 1
+      }
+      p=$((10#${BASH_REMATCH[1]}))
+      proto=${BASH_REMATCH[2]}
+      ((p >= 1 && p <= 65535)) || {
+        ui_error "Porta invalida" "A porta deve estar entre 1 e 65535."
+        return 1
+      }
+      c1=(firewall-cmd --permanent --"$action=$p/$proto")
+      c2=(firewall-cmd --reload)
+      extra="Porta: $p/$proto"
+      ;;
+    reload)
+      c1=(firewall-cmd --reload)
+      ;;
+  esac
+  local cmds
+  cmds=$(cmd_line "${c1[@]}")
+  ((${#c2[@]} > 0)) && cmds+=$'\n'$(cmd_line "${c2[@]}")
+  extra+=$'\n'"Pode interromper SSH se a regra afetar a porta 22. Use console/IPMI."
+  confirm_strong "Firewall" "$cmds" "$extra" || return 0
+  if ! run_cmd "${c1[@]}"; then
+    ui_error "Falha no firewall" "A sequencia foi interrompida." "$RUN_OUT"
+    return 1
+  fi
+  if ((${#c2[@]} > 0)) && ! run_cmd "${c2[@]}"; then
+    ui_error "Falha no reload" "A regra permanente foi gravada, mas o reload falhou." "$RUN_OUT"
+    return 1
+  fi
+  ui_ok "Firewall atualizado" "Acao $action concluida."
+}
+
+selinux_status() {
+  local out
+  out="=== GETENFORCE ==="$'\n'"$(getenforce 2>&1)"$'\n\n'
+  if command -v sestatus >/dev/null 2>&1; then
+    out+="=== SESTATUS ==="$'\n'"$(sestatus 2>&1)"
+  fi
+  show_text "SELinux" "$out"
+}
+
+selinux_mode() {
+  local target current backup conf
+  local -a c1 c2
+  need_bin getenforce libselinux-utils || return 1
+  need_bin setenforce libselinux-utils || return 1
+  current=$(getenforce 2>/dev/null)
+  target=$(show_menu "Modo SELinux" "Modo atual: ${current:-desconhecido}" \
+    enforcing "[ATENCAO] Enforcing (aplica agora e persiste)" \
+    permissive "[ATENCAO] Permissive (aplica agora e persiste)" \
+    disabled "[ATENCAO] Disabled (persiste; exige reboot)") || return 1
+  conf="/etc/selinux/config"
+  backup="$conf.bak.$(date +%Y%m%d%H%M%S)"
+  c1=()
+  if [[ $current != Disabled && $target != disabled ]]; then
+    if [[ $target == enforcing ]]; then
+      c1=(setenforce 1)
+    else
+      c1=(setenforce 0)
+    fi
+  elif [[ $current != Disabled && $target == disabled ]]; then
+    c1=(setenforce 0)
+  fi
+  c2=(cp -a "$conf" "$backup")
+  local cmds extra
+  cmds=""
+  ((${#c1[@]} > 0)) && cmds+=$(cmd_line "${c1[@]}")$'\n'
+  cmds+=$(cmd_line "${c2[@]}")$'\n'
+  cmds+="sed -i $(q "s/^SELINUX=.*/SELINUX=$target/") $(q "$conf")"
+  extra="Modo atual: ${current:-?} | Novo modo: $target"$'\n'"Backup: $backup"
+  [[ $target == disabled ]] && extra+=$'\n'"O modo Disabled so tera efeito completo apos reboot."
+  [[ $current == Disabled && $target != disabled ]] && extra+=$'\n'"SELinux esta desabilitado; habilitar exige reboot."
+  confirm_strong "Alterar SELinux" "$cmds" "$extra" || return 0
+  if ((${#c1[@]} > 0)); then
+    if ! run_cmd "${c1[@]}"; then
+      ui_error "Falha no SELinux" "A sequencia foi interrompida." "$RUN_OUT"
+      return 1
+    fi
+  fi
+  if ! run_cmd "${c2[@]}"; then
+    ui_error "Falha no backup" "A sequencia foi interrompida." "$RUN_OUT"
+    return 1
+  fi
+  if ! run_cmd sed -i "s/^SELINUX=.*/SELINUX=$target/" "$conf"; then
+    ui_error "Falha ao persistir SELinux" "O modo runtime pode ter sido alterado." "$RUN_OUT"
+    return 1
+  fi
+  ui_ok "SELinux atualizado" "Modo alvo: $target."$'\n'"Reboot pode ser necessario para Disabled/Enforcing."
+}
+
+selinux_booleans() {
+  local bo onoff
+  local -a c
+  need_bin getsebool policycoreutils || return 1
+  need_bin setsebool policycoreutils || return 1
+  bo=$(ask "SELinux boolean" "Nome do booleano (ex.: httpd_can_network_connect):") || return 1
+  [[ $bo =~ ^[A-Za-z0-9_]+$ ]] || {
+    ui_error "Booleano invalido" "Informe um nome valido."
+    return 1
+  }
+  getsebool "$bo" >/dev/null 2>&1 || {
+    ui_error "Booleano ausente" "Booleano nao encontrado: $bo"
+    return 1
+  }
+  onoff=$(show_menu "Booleano $bo" "Valor:" \
+    on "[altera] on" \
+    off "[ATENCAO] off") || return 1
+  c=(setsebool -P "$bo" "$onoff")
+  if [[ $onoff == off ]]; then
+    confirm_strong "SELinux boolean" "$(cmd_line "${c[@]}")" \
+      "Booleano: $bo | Valor: $onoff"$'\n'"Desativar um booleano pode reduzir a seguranca ou quebrar servicos." || return 0
+  else
+    confirm_exec "SELinux boolean" "$(cmd_line "${c[@]}")" \
+      "Booleano: $bo | Valor: $onoff"$'\n'"Alteracao persistente." || return 0
+  fi
+  run_cmd "${c[@]}" || {
+    ui_error "Falha no booleano" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "SELinux boolean" "$bo definido como $onoff."
+}
+
+selinux_denials() {
+  local out
+  if command -v ausearch >/dev/null 2>&1; then
+    out=$(ausearch -m AVC,USER_AVC -ts recent 2>&1 | tail -n 200)
+  elif [[ -r /var/log/audit/audit.log ]]; then
+    out=$(grep -i 'avc:' /var/log/audit/audit.log 2>/dev/null | tail -n 200)
+  else
+    out="ausearch/audit.log nao disponivel."
+  fi
+  [[ -n $out ]] || out="Nenhuma negacao AVC recente."
+  show_text "SELinux - negacoes recentes" "$out"
+}
+
+ssh_audit() {
+  local out status
+  if ((RHEL_VER >= 7)); then
+    status=$(systemctl status sshd --no-pager 2>&1)
+  else
+    status=$(service sshd status 2>&1)
+  fi
+  out="=== SSHD STATUS ==="$'\n'"$status"$'\n\n'
+  out+="=== CONFIGURACAO EFETIVA (FILTRADA) ==="$'\n'
+  if ((RHEL_VER >= 7)); then
+    out+="$(sshd -T 2>/dev/null | grep -Ei '^(port|permitrootlogin|passwordauthentication|pubkeyauthentication|maxauthtries|x11forwarding|allowtcpforwarding|logingracetime|usepam)' 2>&1)"$'\n\n'
+  else
+    out+="$(grep -Ei '^(Port|PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|MaxAuthTries|X11Forwarding|AllowTcpForwarding|LoginGraceTime|UsePAM)' /etc/ssh/sshd_config 2>&1)"$'\n\n'
+  fi
+  out+="=== LISTEN ==="$'\n'"$(ss -tlnp 2>/dev/null | grep -E ':(22|2222)[[:space:]]' 2>&1)"
+  show_text "SSH - auditoria" "$out"
+}
+
+ssh_test_config() {
+  need_bin sshd openssh-server || return 1
+  show_text "SSH - teste de configuracao" "$(sshd -t 2>&1; printf '\nrc=%s\n' "$?")"
+}
+
+security_menu() {
+  local c
+  while :; do
+    c=$(show_menu "Seguranca" "Firewall, SELinux e SSH | Legenda: [seguro] [altera] [ATENCAO]" \
+      1 "[seguro] Firewall: status e regras" \
+      2 "[ATENCAO] Firewall: adicionar/remover servico ou porta (RHEL7+)" \
+      3 "[seguro] SELinux: status" \
+      4 "[ATENCAO] SELinux: alterar modo" \
+      5 "[altera] SELinux: alterar booleano" \
+      6 "[seguro] SELinux: negacoes recentes" \
+      7 "[seguro] SSH: auditoria de configuracao" \
+      8 "[seguro] SSH: testar configuracao" \
+      0 "Voltar") || return 0
+    case $c in
+      1) firewall_status ;;
+      2) firewall_change ;;
+      3) selinux_status ;;
+      4) selinux_mode ;;
+      5) selinux_booleans ;;
+      6) selinux_denials ;;
+      7) ssh_audit ;;
+      8) ssh_test_config ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+time_status() {
+  local out
+  out="=== DATA/HORA ==="$'\n'"$(date 2>&1)"$'\n\n'
+  if command -v timedatectl >/dev/null 2>&1; then
+    out+="=== TIMEDATECTL ==="$'\n'"$(timedatectl 2>&1)"$'\n\n'
+  fi
+  out+="=== HWCLOCK ==="$'\n'"$(hwclock --show 2>&1)"$'\n\n'
+  if command -v chronyc >/dev/null 2>&1; then
+    out+="=== CHRONY ==="$'\n'"$(chronyc tracking 2>&1)"
+  elif command -v ntpq >/dev/null 2>&1; then
+    out+="=== NTPQ ==="$'\n'"$(ntpq -p 2>&1)"
+  fi
+  show_text "Data, hora e timezone" "$out"
+}
+
+timezone_change() {
+  local tz backup cmds
+  while :; do
+    tz=$(ask "Timezone" "Timezone (ex.: America/Sao_Paulo):") || return 1
+    if [[ $tz =~ ^[A-Za-z0-9_+/-]+$ && $tz != *..* && -f /usr/share/zoneinfo/$tz ]]; then
+      break
+    fi
+    ui_error "Timezone invalido" "Informe um timezone existente em /usr/share/zoneinfo."
+  done
+  if ((RHEL_VER >= 7)); then
+    need_bin timedatectl systemd || return 1
+    cmds="timedatectl set-timezone $(q "$tz")"
+    confirm_exec "Alterar timezone" "$cmds" "Novo timezone: $tz" || return 0
+    run_cmd timedatectl set-timezone "$tz" || {
+      ui_error "Falha no timezone" "A operacao foi interrompida." "$RUN_OUT"
+      return 1
+    }
+  else
+    backup="/etc/sysconfig/clock.bak.$(date +%Y%m%d%H%M%S)"
+    cmds="cp -a /etc/sysconfig/clock $(q "$backup")"$'\n'
+    cmds+="if grep -q '^ZONE=' /etc/sysconfig/clock; then sed -i $(q "s|^ZONE=.*|ZONE=\"$tz\"|") /etc/sysconfig/clock; else printf 'ZONE=\"%s\"\\n' $(q "$tz") >> /etc/sysconfig/clock; fi"$'\n'
+    cmds+="ln -sf $(q "/usr/share/zoneinfo/$tz") /etc/localtime"$'\n'
+    cmds+="hwclock --systohc"
+    confirm_exec "Alterar timezone" "$cmds" "Novo timezone: $tz | Backup: $backup" || return 0
+    if ! run_shell "$cmds"; then
+      ui_error "Falha no timezone" "A sequencia foi interrompida. Backup: $backup" "$RUN_OUT"
+      return 1
+    fi
+  fi
+  ui_ok "Timezone atualizado" "Timezone definido para $tz."
+}
+
+ntp_status() {
+  local out
+  out="=== SERVICO ==="$'\n'
+  if ((RHEL_VER >= 7)); then
+    out+="$(systemctl status chronyd --no-pager 2>&1 | head -n 15)"
+  else
+    out+="$(service ntpd status 2>&1 | head -n 15)"
+  fi
+  out+=$'\n\n'"=== SINCRONIZACAO ==="$'\n'
+  if command -v chronyc >/dev/null 2>&1; then
+    out+="$(chronyc tracking 2>&1)"
+  elif command -v ntpq >/dev/null 2>&1; then
+    out+="$(ntpq -p 2>&1)"
+  else
+    out+="chronyc/ntpq nao disponivel."
+  fi
+  show_text "NTP / Chrony" "$out"
+}
+
+ntp_toggle() {
+  local action cmds
+  local -a c1 c2
+  action=$(show_menu "NTP" "Sincronizacao de horario:" \
+    on "[altera] Habilitar NTP" \
+    off "[ATENCAO] Desabilitar NTP") || return 1
+  if ((RHEL_VER >= 7)); then
+    need_bin timedatectl systemd || return 1
+    if [[ $action == on ]]; then
+      c1=(timedatectl set-ntp true)
+    else
+      c1=(timedatectl set-ntp false)
+    fi
+  else
+    if [[ $action == on ]]; then
+      c1=(chkconfig ntpd on)
+      c2=(service ntpd start)
+    else
+      c1=(service ntpd stop)
+      c2=(chkconfig ntpd off)
+    fi
+  fi
+  cmds=$(cmd_line "${c1[@]}")
+  ((${#c2[@]} > 0)) && cmds+=$'\n'$(cmd_line "${c2[@]}")
+  if [[ $action == on ]]; then
+    confirm_exec "Habilitar NTP" "$cmds" "Requer chronyd/ntpd instalado e repositorio de tempo acessivel." || return 0
+  else
+    confirm_strong "Desabilitar NTP" "$cmds" "O relogio pode perder sincronizacao." || return 0
+  fi
+  run_cmd "${c1[@]}" || {
+    ui_error "Falha no NTP" "A sequencia foi interrompida." "$RUN_OUT"
+    return 1
+  }
+  if ((${#c2[@]} > 0)); then
+    run_cmd "${c2[@]}" || {
+      ui_error "Falha no NTP" "A sequencia foi interrompida." "$RUN_OUT"
+      return 1
+    }
+  fi
+  ui_ok "NTP atualizado" "Acao $action concluida."
+}
+
+sysctl_view() {
+  local out
+  out="=== VALORES PRINCIPAIS ==="$'\n'
+  out+="$(sysctl kernel.hostname kernel.pid_max fs.file-max vm.swappiness net.ipv4.ip_forward net.ipv4.tcp_syncookies 2>&1)"$'\n\n'
+  out+="=== ARQUIVOS DE CONFIGURACAO ==="$'\n'
+  out+="$(ls -l /etc/sysctl.conf /etc/sysctl.d/*.conf 2>&1)"
+  show_text "Sysctl" "$out"
+}
+
+sysctl_set() {
+  local key value mode current file backup cmds re
+  local -a c
+  re='^[A-Za-z0-9 _.,:/-]+$'
+  while :; do
+    key=$(ask "Sysctl" "Chave (ex.: net.ipv4.ip_forward):") || return 1
+    [[ $key =~ ^[A-Za-z0-9_.-]+$ ]] && sysctl -n "$key" >/dev/null 2>&1 && break
+    ui_error "Chave invalida" "Informe uma chave sysctl existente."
+  done
+  current=$(sysctl -n "$key" 2>/dev/null)
+  while :; do
+    value=$(ask "Sysctl" "Novo valor para $key (atual: ${current:-?}):") || return 1
+    [[ $value =~ $re ]] && break
+    ui_error "Valor invalido" "Use letras, numeros, espaco, ponto, virgula, dois-pontos, barra ou hifen."
+  done
+  mode=$(show_menu "Aplicar sysctl" "Escopo da alteracao:" \
+    runtime "[altera] Temporario (ate reboot)" \
+    persistent "[ATENCAO] Persistente (sobrevive ao reboot)") || return 1
+  if [[ $mode == runtime ]]; then
+    c=(sysctl -w "$key=$value")
+    confirm_exec "Sysctl temporario" "$(cmd_line "${c[@]}")" "$key: $current -> $value" || return 0
+    run_cmd "${c[@]}" || {
+      ui_error "Falha no sysctl" "A operacao foi interrompida." "$RUN_OUT"
+      return 1
+    }
+  else
+    file="/etc/sysctl.d/99-rhel-admin.conf"
+    backup="$file.bak.$(date +%Y%m%d%H%M%S)"
+    cmds="if [ -f $(q "$file") ]; then cp -a $(q "$file") $(q "$backup"); awk -v k=$(q "$key") 'index(\$0, k \"=\") != 1 {print}' $(q "$file") > $(q "$file.rhel_admin.tmp"); chmod --reference=$(q "$file") $(q "$file.rhel_admin.tmp"); else : > $(q "$file.rhel_admin.tmp"); chmod 644 $(q "$file.rhel_admin.tmp"); fi"$'\n'
+    cmds+="mv $(q "$file.rhel_admin.tmp") $(q "$file")"$'\n'
+    cmds+="printf '%s=%s\\n' $(q "$key") $(q "$value") >> $(q "$file")"$'\n'
+    cmds+="sysctl -w $(q "$key=$value")"
+    confirm_strong "Sysctl persistente" "$cmds" \
+      "$key: $current -> $value"$'\n'"Arquivo: $file | Backup: $backup" || return 0
+    if ! run_shell "$cmds"; then
+      ui_error "Falha no sysctl" "A sequencia foi interrompida." "$RUN_OUT"
+      return 1
+    fi
+  fi
+  ui_ok "Sysctl aplicado" "$key = $value."
+}
+
+boot_info() {
+  local out
+  out="=== KERNEL ATUAL ==="$'\n'"$(uname -r 2>&1)"$'\n\n'
+  if ((RHEL_VER >= 7)); then
+    out+="=== DEFAULT TARGET ==="$'\n'"$(systemctl get-default 2>&1)"$'\n\n'
+    if command -v grubby >/dev/null 2>&1; then
+      out+="=== KERNEL PADRAO ==="$'\n'"$(grubby --default-kernel 2>&1)"$'\n\n'
+    fi
+  else
+    out+="=== RUNLEVEL PADRAO ==="$'\n'"$(grep -E '^id:' /etc/inittab 2>&1)"$'\n\n'
+  fi
+  out+="=== KERNELS INSTALADOS ==="$'\n'"$(ls -1 /boot/vmlinuz-* 2>&1)"
+  show_text "Boot e kernel" "$out"
+}
+
+reboot_system() {
+  local -a c=(shutdown -r now "Reboot solicitado por RHEL Admin Manager")
+  confirm_strong "Reiniciar servidor" "$(cmd_line "${c[@]}")" \
+    "Todos os servicos e sessoes serao encerrados." || return 0
+  log_event INICIO 0 "$(cmd_line "${c[@]}")"
+  run_cmd "${c[@]}"
+}
+
+shutdown_system() {
+  local -a c=(shutdown -h now "Desligamento solicitado por RHEL Admin Manager")
+  confirm_strong "Desligar servidor" "$(cmd_line "${c[@]}")" \
+    "O servidor sera desligado e precisara de intervencao para voltar." || return 0
+  log_event INICIO 0 "$(cmd_line "${c[@]}")"
+  run_cmd "${c[@]}"
+}
+
+cancel_shutdown() {
+  local -a c=(shutdown -c)
+  confirm_exec "Cancelar shutdown" "$(cmd_line "${c[@]}")" "Cancela agendamentos de shutdown pendentes." || return 0
+  run_cmd "${c[@]}" || {
+    ui_error "Falha ao cancelar" "Nao havia shutdown agendado ou a operacao falhou." "$RUN_OUT"
+    return 1
+  }
+  ui_ok "Shutdown cancelado" "Agendamentos pendentes foram cancelados."
+}
+
+system_menu() {
+  local c
+  while :; do
+    c=$(show_menu "Sistema" "Data/hora, NTP, kernel e energia | Legenda: [seguro] [altera] [ATENCAO]" \
+      1 "[seguro] Data, hora e timezone" \
+      2 "[altera] Alterar timezone" \
+      3 "[seguro] Status do NTP/chrony" \
+      4 "[altera] Habilitar/desabilitar NTP" \
+      5 "[seguro] Visualizar sysctl" \
+      6 "[ATENCAO] Aplicar sysctl" \
+      7 "[seguro] Boot e kernel" \
+      8 "[ATENCAO] Reiniciar servidor" \
+      9 "[ATENCAO] Desligar servidor" \
+      10 "[altera] Cancelar shutdown" \
+      11 "[seguro] Compatibilidade da versao" \
+      0 "Voltar") || return 0
+    case $c in
+      1) time_status ;;
+      2) timezone_change ;;
+      3) ntp_status ;;
+      4) ntp_toggle ;;
+      5) sysctl_view ;;
+      6) sysctl_set ;;
+      7) boot_info ;;
+      8) reboot_system ;;
+      9) shutdown_system ;;
+      10) cancel_shutdown ;;
+      11) show_text "Compatibilidade $RHEL_LABEL" "$(version_profile_text)" ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+audit_menu() {
+  local c
+  while :; do
+    c=$(show_menu "Auditoria / Logs" "Somente leitura | Arquivo: $LOG_FILE" \
+      1 "[seguro] Ultimas 200 linhas" \
+      2 "[seguro] Somente erros e falhas" \
+      3 "[seguro] Status do arquivo de log" \
+      4 "[seguro] Ajuda rapida" \
+      0 "Voltar") || return 0
+    case $c in
+      1) log_recent ;;
+      2) log_errors ;;
+      3) log_status ;;
+      4) show_text "Ajuda rapida" "$(help_text)" ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
 lvm_menu() {
   local c
   while :; do
-    c=$(show_menu "LVM e File Systems" "Operacoes de LVM e filesystems:" \
-      1 "Visao geral (PV / VG / LV / FS)" \
-      2 "Criar LV (com FS opcional)" \
-      3 "Estender LV e FS online" \
-      4 "Criar FS em LV existente" \
-      5 "Montar FS com UUID no fstab" \
+    c=$(show_menu "LVM e File Systems" "Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
+      1 "[seguro] Visao geral (PV / VG / LV / FS)" \
+      2 "[altera] Criar LV (com FS opcional)" \
+      3 "[altera] Estender LV e FS online" \
+      4 "[ATENCAO] Formatar LV existente" \
+      5 "[altera] Montar FS com UUID no fstab" \
+      6 "[ATENCAO] Desmontar FS e remover do fstab" \
+      7 "[ATENCAO] Excluir LV" \
       0 "Voltar") || return 0
     case $c in
       1) lvm_overview ;;
@@ -1750,6 +3543,8 @@ lvm_menu() {
       3) extend_lv ;;
       4) create_fs_lv ;;
       5) mount_fs ;;
+      6) unmount_fs ;;
+      7) delete_lv ;;
       0) return 0 ;;
     esac
   done
@@ -1758,19 +3553,23 @@ lvm_menu() {
 network_menu() {
   local c
   while :; do
-    c=$(show_menu "Rede" "RHEL $RHEL_VER | Backend: $(version_network_backend)" \
-      1 "Listar interfaces ativas e inativas" \
-      2 "IPv4 completo (IP + mascara + gateway + DNS)" \
-      3 "IPv4 heartbeat/isolado (sem gateway/DNS)" \
-      4 "Testar conectividade (ping / porta)" \
-      5 "Definir hostname / /etc/hosts" \
+    c=$(show_menu "Rede" "Backend: $(version_network_backend)"$'\n'"Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
+      1 "[seguro] Listar interfaces ativas e inativas" \
+      2 "[ATENCAO] IPv4 completo (IP + mascara + gateway + DNS)" \
+      3 "[ATENCAO] IPv4 heartbeat/isolado (sem gateway/DNS)" \
+      4 "[ATENCAO] Configurar DHCP (automatico)" \
+      5 "[seguro] Testar conectividade (ping / porta)" \
+      6 "[seguro] Rotas, DNS e ARP" \
+      7 "[altera] Definir hostname / /etc/hosts" \
       0 "Voltar") || return 0
     case $c in
       1) network_interfaces ;;
       2) configure_network full ;;
       3) configure_network heartbeat ;;
-      4) test_connectivity ;;
-      5) configure_hostname ;;
+      4) configure_dhcp ;;
+      5) test_connectivity ;;
+      6) network_details ;;
+      7) configure_hostname ;;
       0) return 0 ;;
     esac
   done
@@ -1779,13 +3578,15 @@ network_menu() {
 storage_menu() {
   local c
   while :; do
-    c=$(show_menu "Storage / Discos" "Operacoes de armazenamento:" \
-      1 "Rescan SCSI/FC sem reboot" \
-      2 "Listar discos e particoes" \
+    c=$(show_menu "Storage / Discos" "Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
+      1 "[altera] Rescan SCSI/FC sem reboot" \
+      2 "[seguro] Listar discos e particoes" \
+      3 "[seguro] Multipath e HBAs (FC/SCSI)" \
       0 "Voltar") || return 0
     case $c in
       1) rescan_storage ;;
       2) list_disks ;;
+      3) storage_health ;;
       0) return 0 ;;
     esac
   done
@@ -1794,13 +3595,19 @@ storage_menu() {
 diag_menu() {
   local c
   while :; do
-    c=$(show_menu "Diagnostico" "Monitoramento e servicos:" \
-      1 "Resumo (disco, memoria, CPU, uptime)" \
-      2 "Status de servicos essenciais" \
+    c=$(show_menu "Diagnostico / Logs" "Somente leitura - nenhuma alteracao no sistema" \
+      1 "[seguro] Resumo (disco, memoria, CPU, uptime)" \
+      2 "[seguro] Status de servicos essenciais" \
+      3 "[seguro] Rede (rotas, DNS e ARP)" \
+      4 "[seguro] Logs recentes (journal/messages)" \
+      5 "[seguro] Auditoria do script" \
       0 "Voltar") || return 0
     case $c in
       1) diagnostics ;;
       2) service_status ;;
+      3) network_details ;;
+      4) recent_logs ;;
+      5) audit_menu ;;
       0) return 0 ;;
     esac
   done
@@ -1809,22 +3616,32 @@ diag_menu() {
 main_menu() {
   local c
   while :; do
-    c=$(show_menu "Menu principal" "$RHEL_LABEL | $(hostname -s 2>/dev/null || hostname) | $(date '+%Y-%m-%d %H:%M')" \
-      1 "LVM e File Systems" \
-      2 "Rede" \
-      3 "Storage / Discos" \
-      4 "Diagnostico" \
-      5 "Compatibilidade / Riscos da versao" \
-      6 "Batch / Frota (TMUX)" \
-      7 "Sair") || return 0
+    c=$(show_menu "Menu principal" "Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
+      1 "[seguro] Dashboard operacional" \
+      2 "[altera] Armazenamento (LVM, discos, swap)" \
+      3 "[ATENCAO] Rede (pode interromper SSH)" \
+      4 "[altera] Usuarios e Grupos" \
+      5 "[altera] Servicos e Processos" \
+      6 "[altera] Pacotes e Atualizacoes" \
+      7 "[ATENCAO] Seguranca (firewall/SELinux/SSH)" \
+      8 "[ATENCAO] Sistema (hora, NTP, kernel, energia)" \
+      9 "[seguro] Diagnostico / Logs" \
+      10 "[ATENCAO] Batch / Frota (TMUX)" \
+      11 "[seguro] Ajuda rapida" \
+      0 "Sair") || return 0
     case $c in
-      1) lvm_menu ;;
-      2) network_menu ;;
-      3) storage_menu ;;
-      4) diag_menu ;;
-      5) show_text "Compatibilidade $RHEL_LABEL" "$(version_profile_text)" ;;
-      6) batch_menu ;;
-      7) return 0 ;;
+      1) dashboard ;;
+      2) storage_root_menu ;;
+      3) network_menu ;;
+      4) users_menu ;;
+      5) services_menu ;;
+      6) packages_menu ;;
+      7) security_menu ;;
+      8) system_menu ;;
+      9) diag_menu ;;
+      10) batch_menu ;;
+      11) show_text "Ajuda rapida" "$(help_text)" ;;
+      0) return 0 ;;
     esac
   done
 }
@@ -1837,16 +3654,19 @@ main() {
   SCRIPT_DIR=$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")" && pwd)
   BATCH_FILE="$SCRIPT_DIR/hosts.batch"
   BATCH_SSH_USER=${BATCH_SSH_USER:-${SUDO_USER:-$(id -un)}}
+  [[ $BATCH_SSH_USER =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || BATCH_SSH_USER=$(id -un)
   BATCH_DEFAULT_USER=${BATCH_DEFAULT_USER:-$BATCH_SSH_USER}
+  [[ $BATCH_DEFAULT_USER =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || BATCH_DEFAULT_USER=$BATCH_SSH_USER
   detect_release
   set_ui
+  init_theme
   if ! check_release; then
     return 1
   fi
   LOG_USER=${SUDO_USER:-$(id -un)}
   init_log
   log_event INICIO 0 "inicio da sessao | release=$RELEASE_NAME"
-  show_text "Perfil $RHEL_LABEL" "$(version_profile_text)"
+  show_text "Dashboard - $RHEL_LABEL" "$(dashboard_text)"
   main_menu
   log_event FIM 0 "fim da sessao"
   printf 'Log de auditoria: %s\n' "$LOG_FILE"
