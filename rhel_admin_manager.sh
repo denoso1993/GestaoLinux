@@ -147,17 +147,17 @@ refresh_status() {
   [[ -n $mem ]] || mem="n/d"
   swap=$(free -m 2>/dev/null | awk '/^Swap:/ {if ($2 > 0) printf "%d%%", ($3 * 100) / $2; else printf "off"}')
   [[ -n $swap ]] || swap="n/d"
-  rootpct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
+  rootpct=$(timeout 5 df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
   [[ -n $rootpct ]] || rootpct="?"
   failed="n/d"
   if ((RHEL_VER >= 7)); then
     failed=$(timeout 5 systemctl --failed --no-pager --plain 2>/dev/null | grep -c '\.service')
     [[ $failed =~ ^[0-9]+$ ]] || failed="n/d"
   fi
-  vg=$(vgs --noheadings 2>/dev/null | wc -l)
-  lv=$(lvs --noheadings 2>/dev/null | wc -l)
+  vg=$(timeout 5 vgs --noheadings 2>/dev/null | wc -l)
+  lv=$(timeout 5 lvs --noheadings 2>/dev/null | wc -l)
   batch="inativa"
-  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
+  if command -v tmux >/dev/null 2>&1 && timeout 2 tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
     batch="ativa"
   fi
   selinux=$(getenforce 2>/dev/null)
@@ -188,13 +188,13 @@ show_menu() {
   whiptail --backtitle "$BACKTITLE" --title "$title" \
     --fb --notags --ok-button "Selecionar" --cancel-button "Voltar" \
     --menu "$prompt"$'\n'"$(ui_rule)"$'\n'"$(status_block)"$'\n'"$MENU_HINT"$'\n'"  $(ui_footer)" \
-    "$UI_H" "$UI_W" "$MENU_ROWS" "$@" 3>&1 1>&2 2>&3
+    "$UI_H" "$UI_W" "$MENU_ROWS" "$@" </dev/tty 3>&1 1>&2 2>&3
 }
 
 action_command_hint() {
   local item=$1
   case $item in
-    "Consultar volumes"*) printf 'pvs; vgs; lvs; df -hT' ;;
+    "Consultar volumes"*) printf 'pvs; vgs; lvs; timeout 10 df -hT' ;;
     "Consultar interfaces"*) printf 'ip -o link show; ip -4 -o addr show; nmcli device status' ;;
     "Testar conectividade"*) printf 'ping -c 2; teste TCP via /dev/tcp' ;;
     "Consultar rotas"*) printf 'ip route; ip neigh; cat /etc/resolv.conf' ;;
@@ -223,7 +223,7 @@ action_command_hint() {
     "Consultar uso do swap"*) printf 'cat /proc/swaps; free -m' ;;
     "Consultar discos"*) printf 'lsblk; fdisk -l' ;;
     "Consultar multipath"*) printf 'multipath -ll; leitura de /sys/class/fc_host' ;;
-    "Uso de filesystems"*) printf 'df -hT; df -i' ;;
+    "Uso de filesystems"*) printf 'timeout 10 df -hT; timeout 10 df -i' ;;
     "Consultar usuarios"*) printf 'getent passwd; getent group; who; last' ;;
     "Logs recentes"*) printf 'journalctl -n 120 ou tail -n 120 /var/log/messages' ;;
     "Consultar logs"*) printf 'journalctl -n 120 ou tail -n 120 /var/log/messages' ;;
@@ -307,7 +307,7 @@ ask() {
   local title=$1 prompt=$2 default=${3:-} ans
   ans=$(whiptail --backtitle "$BACKTITLE" --title "$title" --fb \
     --ok-button "Confirmar" --cancel-button "Cancelar" --inputbox \
-    "$prompt" 12 "$UI_W" "$default" 3>&1 1>&2 2>&3) || return 1
+    "$prompt" 12 "$UI_W" "$default" </dev/tty 3>&1 1>&2 2>&3) || return 1
   ans=$(printf '%s' "$ans" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   printf '%s' "$ans"
 }
@@ -350,7 +350,7 @@ confirm_strong() {
     $'== OPERACAO DESTRUTIVA ==\n\n'"$cmds"$'\n\n== CONFIRMACAO ==\n'"Digite SIM na proxima tela para continuar." || return 1
   ans=$(whiptail --backtitle "$BACKTITLE" --title "CONFIRMAR - $title" --fb \
     --ok-button "Confirmar" --cancel-button "Cancelar" --inputbox \
-    "Digite SIM para confirmar:" 10 "$UI_W" "" 3>&1 1>&2 2>&3) || return 1
+    "Digite SIM para confirmar:" 10 "$UI_W" "" </dev/tty 3>&1 1>&2 2>&3) || return 1
   [[ $ans == SIM ]]
 }
 
@@ -358,7 +358,7 @@ ui_yesno() {
   local h=14
   ((h > UI_H)) && h=$UI_H
   whiptail --backtitle "$BACKTITLE" --title "$1" --fb --defaultno \
-    --yes-button "Confirmar" --no-button "Cancelar" --yesno "$2" "$h" "$UI_W"
+    --yes-button "Confirmar" --no-button "Cancelar" --yesno "$2" "$h" "$UI_W" </dev/tty >/dev/tty 2>&1
 }
 
 confirm_batch() {
@@ -368,7 +368,7 @@ confirm_batch() {
   if ((strong)); then
     ans=$(whiptail --backtitle "$BACKTITLE" --title "CONFIRMAR - $title" --fb \
       --ok-button "Confirmar" --cancel-button "Cancelar" --inputbox \
-      "Digite SIM para confirmar:" 10 "$UI_W" "" 3>&1 1>&2 2>&3) || return 1
+      "Digite SIM para confirmar:" 10 "$UI_W" "" </dev/tty 3>&1 1>&2 2>&3) || return 1
     [[ $ans == SIM ]]
   else
     ui_yesno "Executar batch" "Executar os comandos exibidos na sessao $BATCH_SESSION?"
@@ -380,8 +380,10 @@ show_text() {
   f=$(mktemp "$TMP_DIR/text.XXXXXX") || return 1
   printf '%s\n' "$text" >"$f"
   whiptail --backtitle "$BACKTITLE" --title "$title" --fb --ok-button "Fechar" \
-    --scrolltext --textbox "$f" "$UI_H" "$UI_W"
+    --scrolltext --textbox "$f" "$UI_H" "$UI_W" </dev/tty >/dev/tty 2>&1
+  local rc=$?
   rm -f "$f"
+  return "$rc"
 }
 
 need_bin() {
@@ -734,7 +736,7 @@ in_swap() {
 
 vg_free_bytes() {
   local bytes
-  bytes=$(vgs --noheadings --units b --nosuffix -o vg_free "$1" 2>/dev/null |
+  bytes=$(timeout 5 vgs --noheadings --units b --nosuffix -o vg_free "$1" 2>/dev/null |
     awk 'NR==1 {gsub(/[<>]/,"",$1); printf "%.0f",$1}')
   [[ $bytes =~ ^[0-9]+$ ]] || return 1
   printf '%s' "$bytes"
@@ -757,7 +759,7 @@ select_vg() {
   while read -r name free; do
     [[ -n $name ]] || continue
     items+=("$name" "$name | livre: ${free:-?}")
-  done < <(vgs --noheadings -o vg_name,vg_free 2>/dev/null)
+  done < <(timeout 10 vgs --noheadings -o vg_name,vg_free 2>/dev/null)
   if ((${#items[@]} == 0)); then
     ui_error "LVM" "Nenhum Volume Group encontrado."
     return 1
@@ -775,7 +777,7 @@ select_lv() {
       t|s|V) continue ;;
     esac
     items+=("$vg/$lv" "$vg/$lv | $size")
-  done < <(lvs --noheadings -o vg_name,lv_name,lv_size,lv_attr 2>/dev/null)
+  done < <(timeout 10 lvs --noheadings -o vg_name,lv_name,lv_size,lv_attr 2>/dev/null)
   if ((${#items[@]} == 0)); then
     ui_error "LVM" "Nenhum Logical Volume simples encontrado (thin/snapshot sao omitidos)."
     return 1
@@ -796,7 +798,7 @@ select_device() {
     esac
     mp=$(mountpoint_of "$dev")
     items+=("$dev" "$dev | $fs | ${mp:-nao montado}")
-  done < <(blkid -o device 2>/dev/null | sort -u)
+  done < <(timeout 10 blkid -o device 2>/dev/null | sort -u)
   if ((${#items[@]} == 0)); then
     ui_error "File Systems" "Nenhum dispositivo com filesystem detectado."
     return 1
@@ -819,13 +821,13 @@ lvm_overview() {
   local out
   out=$(
     printf '=== PHYSICAL VOLUMES ===\n'
-    pvs 2>&1
+    timeout 10 pvs 2>&1
     printf '\n=== VOLUME GROUPS ===\n'
-    vgs 2>&1
+    timeout 10 vgs 2>&1
     printf '\n=== LOGICAL VOLUMES ===\n'
-    lvs 2>&1
+    timeout 10 lvs 2>&1
     printf '\n=== FILESYSTEMS ===\n'
-    df -hT 2>&1
+    timeout 10 df -hT 2>&1
   )
   show_text "LVM e File Systems" "$out"
 }
@@ -842,7 +844,7 @@ create_lv() {
       ui_error "Nome invalido" "Use letras, numeros, ponto, hifen, underline ou mais; nao inicie com hifen."
       continue
     fi
-    if lvs "$vg/$name" >/dev/null 2>&1; then
+    if timeout 5 lvs "$vg/$name" >/dev/null 2>&1; then
       ui_error "LV existente" "O LV $vg/$name ja existe. Escolha outro nome."
       continue
     fi
@@ -1096,7 +1098,7 @@ select_mounted_device() {
     [[ -n $mp ]] || continue
     fs=$(fs_type "$dev")
     items+=("$dev" "$dev | $fs | $mp")
-  done < <(blkid -o device 2>/dev/null | sort -u)
+  done < <(timeout 10 blkid -o device 2>/dev/null | sort -u)
   if ((${#items[@]} == 0)); then
     ui_error "File Systems" "Nenhum filesystem montado detectado."
     return 1
@@ -1196,7 +1198,7 @@ network_interfaces() {
   local out
   out=$(printf '=== LINK ===\n'; ip -o link show 2>&1; printf '\n=== IPv4 ===\n'; ip -4 -o addr show 2>&1)
   if command -v nmcli >/dev/null 2>&1; then
-    out+=$'\n\n=== NETWORKMANAGER ===\n'"$(nmcli device status 2>&1)"
+    out+=$'\n\n=== NETWORKMANAGER ===\n'"$(timeout 5 nmcli device status 2>&1)"
   fi
   show_text "Interfaces de rede" "$out"
 }
@@ -1222,9 +1224,9 @@ select_iface() {
 
 find_nm_conn() {
   local d=$1 c
-  c=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null |
+  c=$(timeout 5 nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null |
     awk -F: -v d="$d" '$2==d {print $1; exit}')
-  [[ -n $c ]] || c=$(nmcli -t -f NAME,DEVICE connection show 2>/dev/null |
+  [[ -n $c ]] || c=$(timeout 5 nmcli -t -f NAME,DEVICE connection show 2>/dev/null |
     awk -F: -v d="$d" '$2==d {print $1; exit}')
   printf '%s' "$c"
 }
@@ -1469,7 +1471,7 @@ network_details() {
   out+="=== NEIGHBORS / ARP ==="$'\n'"$(ip neigh show 2>&1)"$'\n\n'
   out+="=== RESOLV.CONF ==="$'\n'"$(cat /etc/resolv.conf 2>&1)"
   if command -v nmcli >/dev/null 2>&1; then
-    out+=$'\n\n'"=== NETWORKMANAGER DEVICE STATUS ==="$'\n'"$(nmcli device status 2>&1)"
+    out+=$'\n\n'"=== NETWORKMANAGER DEVICE STATUS ==="$'\n'"$(timeout 5 nmcli device status 2>&1)"
   fi
   show_text "Rede - rotas, DNS e ARP" "$out"
 }
@@ -2035,7 +2037,7 @@ batch_reboot() {
 
 batch_diag() {
   local remote
-  remote='echo "=== HOST ==="; hostname; cat /etc/redhat-release 2>/dev/null || cat /etc/os-release 2>/dev/null; echo; uptime; echo; df -hT; echo; free -m; echo; if command -v systemctl >/dev/null 2>&1; then systemctl --failed --no-pager; else echo "systemctl ausente (RHEL6)"; fi; echo; ip -4 -o addr show 2>/dev/null'
+  remote='echo "=== HOST ==="; hostname; cat /etc/redhat-release 2>/dev/null || cat /etc/os-release 2>/dev/null; echo; uptime; echo; timeout 10 df -hT; echo; free -m; echo; if command -v systemctl >/dev/null 2>&1; then systemctl --failed --no-pager; else echo "systemctl ausente (RHEL6)"; fi; echo; ip -4 -o addr show 2>/dev/null'
   batch_dispatch "Coletar diagnostico" "$remote" 0 0 0 \
     "Coleta somente leitura. Saida individual em host-N.log." 
 }
@@ -2163,22 +2165,22 @@ rescan_storage() {
     return 1
   fi
   sleep 3
-  out=$(lsblk 2>&1)
-  out+=$'\n\n=== FDISK -L ===\n'"$(fdisk -l 2>&1)"
+  out=$(timeout 10 lsblk 2>&1)
+  out+=$'\n\n=== FDISK -L ===\n'"$(timeout 15 fdisk -l 2>&1)"
   show_text "Discos apos rescan" "$out"
 }
 
 list_disks() {
   local out
-  out=$(lsblk 2>&1)
-  out+=$'\n\n=== FDISK -L ===\n'"$(fdisk -l 2>&1)"
+  out=$(timeout 10 lsblk 2>&1)
+  out+=$'\n\n=== FDISK -L ===\n'"$(timeout 15 fdisk -l 2>&1)"
   show_text "Discos e particoes" "$out"
 }
 
 filesystem_usage() {
   local out
-  out="=== ESPACO EM DISCO ==="$'\n'"$(df -hT 2>&1)"$'\n\n'
-  out+="=== INODES ==="$'\n'"$(df -i 2>&1)"
+  out="=== ESPACO EM DISCO ==="$'\n'"$(timeout 10 df -hT 2>&1)"$'\n\n'
+  out+="=== INODES ==="$'\n'"$(timeout 10 df -i 2>&1)"
   show_text "Uso de filesystems" "$out"
 }
 
@@ -2188,7 +2190,7 @@ select_swap_device() {
   while read -r dev; do
     [[ -b $dev ]] || continue
     items+=("$dev" "$dev")
-  done < <(blkid -o device -t TYPE=swap 2>/dev/null | sort -u)
+  done < <(timeout 10 blkid -o device -t TYPE=swap 2>/dev/null | sort -u)
   if ((${#items[@]} == 0)); then
     ui_error "Swap" "Nenhum dispositivo swap encontrado. Crie com mkswap/lvcreate primeiro."
     return 1
@@ -2290,14 +2292,14 @@ storage_health() {
     [[ -e $h ]] || continue
     out+="${h##*/} | proc=$(cat "$h/proc_name" 2>/dev/null)"$'\n'
   done
-  out+=$'\n'"=== BLOCK DEVICES ==="$'\n'"$(lsblk 2>&1)"
+  out+=$'\n'"=== BLOCK DEVICES ==="$'\n'"$(timeout 10 lsblk 2>&1)"
   show_text "Multipath e HBAs" "$out"
 }
 
 recent_logs() {
   local out=""
   if command -v journalctl >/dev/null 2>&1; then
-    out+="=== JOURNAL (ultimas 120) ==="$'\n'"$(journalctl -n 120 --no-pager 2>&1)"$'\n\n'
+    out+="=== JOURNAL (ultimas 120) ==="$'\n'"$(timeout 10 journalctl -n 120 --no-pager 2>&1)"$'\n\n'
   fi
   if [[ -r /var/log/messages ]]; then
     out+="=== /var/log/messages (ultimas 120) ==="$'\n'"$(tail -n 120 /var/log/messages 2>&1)"
@@ -2312,7 +2314,7 @@ hardware_info() {
   out+="=== MEMORIA ==="$'\n'"$(lsmem 2>&1 | head -n 20)"$'\n\n'
   out+="=== DMI ==="$'\n'"$(dmidecode -t system -t bios 2>&1 | head -n 40)"$'\n\n'
   out+="=== PCI ==="$'\n'"$(lspci 2>&1 | head -n 40)"$'\n\n'
-  out+="=== BLOCK DEVICES ==="$'\n'"$(lsblk 2>&1)"
+  out+="=== BLOCK DEVICES ==="$'\n'"$(timeout 10 lsblk 2>&1)"
   show_text "Inventario de hardware" "$out"
 }
 
@@ -2323,7 +2325,7 @@ diagnostics() {
   out+="=== UPTIME / CARGA ==="$'\n'"$(uptime 2>&1)"$'\n\n'
   out+="=== CPU ==="$'\n'"Nucleos online: $cpus"$'\n\n'
   out+="=== MEMORIA (MB) ==="$'\n'"$(free -m 2>&1)"$'\n\n'
-  out+="=== DISCOS ==="$'\n'"$(df -hT 2>&1)"$'\n\n'
+  out+="=== DISCOS ==="$'\n'"$(timeout 10 df -hT 2>&1)"$'\n\n'
   out+="=== TOP CPU ==="$'\n'"$(ps -eo pid,user,pcpu,pmem,comm --sort=-pcpu 2>&1 | head -n 6)"
   show_text "Diagnostico" "$out"
 }
@@ -2334,12 +2336,12 @@ service_status() {
   out=""
   if ((RHEL_VER >= 7)); then
     services=(sshd NetworkManager crond rsyslog auditd firewalld chronyd)
-    out+="=== SYSTEMD FALHAS ==="$'\n'"$(systemctl --failed --no-pager 2>&1)"$'\n\n'
+    out+="=== SYSTEMD FALHAS ==="$'\n'"$(timeout 5 systemctl --failed --no-pager 2>&1)"$'\n\n'
     out+="SERVICO                ATIVO      HABILITADO"$'\n'
     for s in "${services[@]}"; do
-      st=$(systemctl is-active "$s" 2>/dev/null)
+      st=$(timeout 3 systemctl is-active "$s" 2>/dev/null)
       [[ -n $st ]] || st=desconhecido
-      en=$(systemctl is-enabled "$s" 2>/dev/null)
+      en=$(timeout 3 systemctl is-enabled "$s" 2>/dev/null)
       [[ -n $en ]] || en=desconhecido
       printf -v line '%-22s %-10s %s' "$s" "$st" "$en"
       out+="$line"$'\n'
@@ -2371,10 +2373,10 @@ dashboard_text() {
   load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
   mem=$(free -m 2>/dev/null | awk '/^Mem:/ {if ($2 > 0) printf "%s/%s MB (%.0f%%)", $3, $2, ($3 * 100) / $2}')
   swap=$(free -m 2>/dev/null | awk '/^Swap:/ {if ($2 > 0) printf "%s/%s MB", $3, $2; else printf "desativado"}')
-  rootpct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
-  rootfree=$(df -h / 2>/dev/null | awk 'NR==2 {print $4}')
-  vgcount=$(vgs --noheadings 2>/dev/null | wc -l)
-  lvcount=$(lvs --noheadings 2>/dev/null | wc -l)
+  rootpct=$(timeout 5 df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
+  rootfree=$(timeout 5 df -h / 2>/dev/null | awk 'NR==2 {print $4}')
+  vgcount=$(timeout 5 vgs --noheadings 2>/dev/null | wc -l)
+  lvcount=$(timeout 5 lvs --noheadings 2>/dev/null | wc -l)
   if ((RHEL_VER >= 7)); then
     failed=$(timeout 5 systemctl --failed --no-pager --plain 2>/dev/null | grep -c '\.service')
   else
@@ -2383,7 +2385,7 @@ dashboard_text() {
   nics=$(ls /sys/class/net 2>/dev/null | grep -vc '^lo$')
   batch_count=0
   [[ -r $BATCH_FILE && ! -L $BATCH_FILE ]] && batch_count=$(grep -vcE '^[[:space:]]*(#|$)' "$BATCH_FILE" 2>/dev/null)
-  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
+  if command -v tmux >/dev/null 2>&1 && timeout 2 tmux has-session -t "$BATCH_SESSION" 2>/dev/null; then
     batch_state="ativa"
   else
     batch_state="inativa"
@@ -2827,7 +2829,7 @@ select_service() {
   if ((RHEL_VER >= 7)); then
     while read -r svc; do
       [[ $svc =~ ^[A-Za-z0-9@_.:-]+$ ]] && items+=("$svc" "$svc")
-    done < <(systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null | awk '{print $1}' | sed 's/\.service$//' | sort -u)
+    done < <(timeout 10 systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null | awk '{print $1}' | sed 's/\.service$//' | sort -u)
   else
     while read -r svc; do
       [[ $svc =~ ^[A-Za-z0-9@_.:-]+$ ]] && items+=("$svc" "$svc")
@@ -2843,7 +2845,7 @@ select_service() {
 service_failed() {
   local out
   if ((RHEL_VER >= 7)); then
-    out=$(systemctl --failed --no-pager 2>&1)
+    out=$(timeout 5 systemctl --failed --no-pager 2>&1)
   else
     out=$(timeout 15 service --status-all 2>&1 | grep -iE 'stopped|failed|dead' || true)
     [[ -n $out ]] || out="Nenhum servico parado/falho detectado."
@@ -2964,7 +2966,7 @@ scheduled_jobs() {
   out="=== CRONTAB ROOT ==="$'\n'"$(crontab -l 2>&1)"$'\n\n'
   out+="=== /etc/cron.d ==="$'\n'"$(ls -l /etc/cron.d 2>&1)"$'\n\n'
   if ((RHEL_VER >= 7)); then
-    out+="=== SYSTEMD TIMERS ==="$'\n'"$(systemctl list-timers --all --no-pager 2>&1)"
+    out+="=== SYSTEMD TIMERS ==="$'\n'"$(timeout 5 systemctl list-timers --all --no-pager 2>&1)"
   else
     out+="=== CRON ==="$'\n'"$(service crond status 2>&1)"
   fi
@@ -3010,7 +3012,7 @@ pkg_repos() {
     ui_error "Pacotes" "dnf/yum nao encontrado."
     return 1
   }
-  show_text "Repositorios - $pkg" "$("$pkg" repolist 2>&1)"
+  show_text "Repositorios - $pkg" "$(timeout 60 "$pkg" repolist 2>&1)"
 }
 
 pkg_updates() {
@@ -3019,7 +3021,7 @@ pkg_updates() {
     ui_error "Pacotes" "dnf/yum nao encontrado."
     return 1
   }
-  out=$("$pkg" check-update 2>&1)
+  out=$(timeout 120 "$pkg" check-update 2>&1)
   rc=$?
   if ((rc == 0)); then
     out="Nenhuma atualizacao disponivel."
@@ -3109,7 +3111,7 @@ pkg_search() {
     ui_error "Busca invalida" "O termo deve iniciar com letra ou numero."
     return 1
   }
-  show_text "Busca - $term" "$("$pkg" search "$term" 2>&1)"
+  show_text "Busca - $term" "$(timeout 30 "$pkg" search "$term" 2>&1)"
 }
 
 pkg_info() {
@@ -3120,13 +3122,13 @@ pkg_info() {
     ui_error "Nome invalido" "Informe um nome de pacote valido."
     return 1
   }
-  show_text "Pacote - $name" "$("$pkg" info "$name" 2>&1)"
+  show_text "Pacote - $name" "$(timeout 30 "$pkg" info "$name" 2>&1)"
 }
 
 pkg_history() {
   local pkg
   pkg=$(pkg_backend) || return 1
-  show_text "Historico de pacotes" "$("$pkg" history 2>&1)"
+  show_text "Historico de pacotes" "$(timeout 30 "$pkg" history 2>&1)"
 }
 
 pkg_subscription() {
@@ -3135,9 +3137,9 @@ pkg_subscription() {
     ui_error "Subscription Manager" "subscription-manager nao instalado."
     return 1
   fi
-  out="=== STATUS ==="$'\n'"$(subscription-manager status 2>&1)"$'\n\n'
-  out+="=== IDENTIDADE ==="$'\n'"$(subscription-manager identity 2>&1)"$'\n\n'
-  out+="=== REPOSITORIOS HABILITADOS ==="$'\n'"$(subscription-manager repos --list-enabled 2>&1)"
+  out="=== STATUS ==="$'\n'"$(timeout 30 subscription-manager status 2>&1)"$'\n\n'
+  out+="=== IDENTIDADE ==="$'\n'"$(timeout 30 subscription-manager identity 2>&1)"$'\n\n'
+  out+="=== REPOSITORIOS HABILITADOS ==="$'\n'"$(timeout 30 subscription-manager repos --list-enabled 2>&1)"
   show_text "Subscription Manager" "$out"
 }
 
@@ -3176,9 +3178,9 @@ packages_menu() {
 firewall_status() {
   local out
   if command -v firewall-cmd >/dev/null 2>&1; then
-    out="=== FIREWALLD ==="$'\n'"$(firewall-cmd --state 2>&1)"$'\n\n'
-    out+="=== ZONAS ATIVAS ==="$'\n'"$(firewall-cmd --get-active-zones 2>&1)"$'\n\n'
-    out+="=== CONFIGURACAO DA ZONA PADRAO ==="$'\n'"$(firewall-cmd --list-all 2>&1)"
+    out="=== FIREWALLD ==="$'\n'"$(timeout 5 firewall-cmd --state 2>&1)"$'\n\n'
+    out+="=== ZONAS ATIVAS ==="$'\n'"$(timeout 5 firewall-cmd --get-active-zones 2>&1)"$'\n\n'
+    out+="=== CONFIGURACAO DA ZONA PADRAO ==="$'\n'"$(timeout 5 firewall-cmd --list-all 2>&1)"
   elif command -v iptables >/dev/null 2>&1; then
     out="=== IPTABLES ==="$'\n'"$(iptables -L -n -v 2>&1)"
   else
@@ -3195,7 +3197,7 @@ firewall_change() {
     return 1
   fi
   need_bin firewall-cmd firewalld || return 1
-  if ! firewall-cmd --state >/dev/null 2>&1; then
+  if ! timeout 5 firewall-cmd --state >/dev/null 2>&1; then
     ui_error "Firewall" "firewalld nao esta em execucao."
     return 1
   fi
@@ -3347,7 +3349,7 @@ selinux_booleans() {
 selinux_denials() {
   local out
   if command -v ausearch >/dev/null 2>&1; then
-    out=$(ausearch -m AVC,USER_AVC -ts recent 2>&1 | tail -n 200)
+    out=$(timeout 15 ausearch -m AVC,USER_AVC -ts recent 2>&1 | tail -n 200)
   elif [[ -r /var/log/audit/audit.log ]]; then
     out=$(grep -i 'avc:' /var/log/audit/audit.log 2>/dev/null | tail -n 200)
   else
@@ -3360,14 +3362,14 @@ selinux_denials() {
 ssh_audit() {
   local out status
   if ((RHEL_VER >= 7)); then
-    status=$(systemctl status sshd --no-pager 2>&1)
+    status=$(timeout 5 systemctl status sshd --no-pager 2>&1)
   else
-    status=$(service sshd status 2>&1)
+    status=$(timeout 5 service sshd status 2>&1)
   fi
   out="=== SSHD STATUS ==="$'\n'"$status"$'\n\n'
   out+="=== CONFIGURACAO EFETIVA (FILTRADA) ==="$'\n'
   if ((RHEL_VER >= 7)); then
-    out+="$(sshd -T 2>/dev/null | grep -Ei '^(port|permitrootlogin|passwordauthentication|pubkeyauthentication|maxauthtries|x11forwarding|allowtcpforwarding|logingracetime|usepam)' 2>&1)"$'\n\n'
+    out+="$(timeout 5 sshd -T 2>/dev/null | grep -Ei '^(port|permitrootlogin|passwordauthentication|pubkeyauthentication|maxauthtries|x11forwarding|allowtcpforwarding|logingracetime|usepam)' 2>&1)"$'\n\n'
   else
     out+="$(grep -Ei '^(Port|PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|MaxAuthTries|X11Forwarding|AllowTcpForwarding|LoginGraceTime|UsePAM)' /etc/ssh/sshd_config 2>&1)"$'\n\n'
   fi
@@ -3377,7 +3379,7 @@ ssh_audit() {
 
 ssh_test_config() {
   need_bin sshd openssh-server || return 1
-  show_text "SSH - teste de configuracao" "$(sshd -t 2>&1; printf '\nrc=%s\n' "$?")"
+  show_text "SSH - teste de configuracao" "$(timeout 5 sshd -t 2>&1; printf '\nrc=%s\n' "$?")"
 }
 
 security_menu() {
@@ -3413,11 +3415,11 @@ time_status() {
   if command -v timedatectl >/dev/null 2>&1; then
     out+="=== TIMEDATECTL ==="$'\n'"$(timedatectl 2>&1)"$'\n\n'
   fi
-  out+="=== HWCLOCK ==="$'\n'"$(hwclock --show 2>&1)"$'\n\n'
+  out+="=== HWCLOCK ==="$'\n'"$(timeout 5 hwclock --show 2>&1)"$'\n\n'
   if command -v chronyc >/dev/null 2>&1; then
-    out+="=== CHRONY ==="$'\n'"$(chronyc tracking 2>&1)"
+    out+="=== CHRONY ==="$'\n'"$(timeout 5 chronyc tracking 2>&1)"
   elif command -v ntpq >/dev/null 2>&1; then
-    out+="=== NTPQ ==="$'\n'"$(ntpq -p 2>&1)"
+    out+="=== NTPQ ==="$'\n'"$(timeout 5 ntpq -p 2>&1)"
   fi
   show_text "Data, hora e timezone" "$out"
 }
@@ -3444,7 +3446,7 @@ timezone_change() {
     cmds="cp -a /etc/sysconfig/clock $(q "$backup")"$'\n'
     cmds+="if grep -q '^ZONE=' /etc/sysconfig/clock; then sed -i $(q "s|^ZONE=.*|ZONE=\"$tz\"|") /etc/sysconfig/clock; else printf 'ZONE=\"%s\"\\n' $(q "$tz") >> /etc/sysconfig/clock; fi"$'\n'
     cmds+="ln -sf $(q "/usr/share/zoneinfo/$tz") /etc/localtime"$'\n'
-    cmds+="hwclock --systohc"
+    cmds+="timeout 10 hwclock --systohc"
     confirm_exec "Alterar timezone" "$cmds" "Novo timezone: $tz | Backup: $backup" || return 0
     if ! run_shell "$cmds"; then
       ui_error "Falha no timezone" "A sequencia foi interrompida. Backup: $backup" "$RUN_OUT"
@@ -3458,15 +3460,15 @@ ntp_status() {
   local out
   out="=== SERVICO ==="$'\n'
   if ((RHEL_VER >= 7)); then
-    out+="$(systemctl status chronyd --no-pager 2>&1 | head -n 15)"
+    out+="$(timeout 5 systemctl status chronyd --no-pager 2>&1 | head -n 15)"
   else
-    out+="$(service ntpd status 2>&1 | head -n 15)"
+    out+="$(timeout 5 service ntpd status 2>&1 | head -n 15)"
   fi
   out+=$'\n\n'"=== SINCRONIZACAO ==="$'\n'
   if command -v chronyc >/dev/null 2>&1; then
-    out+="$(chronyc tracking 2>&1)"
+    out+="$(timeout 5 chronyc tracking 2>&1)"
   elif command -v ntpq >/dev/null 2>&1; then
-    out+="$(ntpq -p 2>&1)"
+    out+="$(timeout 5 ntpq -p 2>&1)"
   else
     out+="chronyc/ntpq nao disponivel."
   fi
