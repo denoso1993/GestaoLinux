@@ -13,6 +13,7 @@ BACKTITLE="RHEL Admin Manager"
 UI_H=22
 UI_W=78
 MENU_ROWS=12
+MENU_HINT="  Setas: navegar  |  Enter: selecionar  |  Esc: voltar"
 STATUS_TS=0
 STATUS_LINE1=""
 STATUS_LINE2=""
@@ -119,7 +120,7 @@ set_ui() {
 }
 
 init_theme() {
-  export NEWT_COLORS='root=,black;window=white,blue;border=black,cyan;shadow=black,black;title=black,cyan;button=black,cyan;actbutton=white,cyan;compactbutton=black,cyan;checkbox=black,cyan;actcheckbox=white,cyan;entry=black,white;label=black,white;listbox=black,white;actlistbox=white,blue;sellistbox=black,white;actsellistbox=white,blue;textbox=black,white;acttextbox=white,blue;helpline=white,blue;roottext=black,white;emptyscale=,black;fullscale=,cyan;disentry=black,white'
+  export NEWT_COLORS='root=white,black;roottext=white,black;window=white,black;border=white,black;shadow=black,black;title=yellow,black;button=black,lightgray;actbutton=black,cyan;compactbutton=white,black;textbox=white,black;acttextbox=white,black;entry=white,black;label=white,black;listbox=white,black;actlistbox=black,cyan;sellistbox=white,black;actsellistbox=black,cyan;checkbox=white,black;actcheckbox=black,cyan;helpline=white,black;emptyscale=,black;fullscale=,cyan;disentry=gray,black'
 }
 
 ui_footer() {
@@ -133,16 +134,19 @@ ui_rule() {
 }
 
 refresh_status() {
-  local ip up load mem rootpct failed vg lv batch selinux fw
+  local ip up load mem swap kernel rootpct failed vg lv batch selinux fw
+  kernel=$(uname -r 2>/dev/null)
   ip=$(ip -4 -o addr show scope global 2>/dev/null | awk 'NR==1 {print $4}')
   [[ -z $ip ]] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   [[ -n $ip ]] || ip="sem-ip"
-  up=$(uptime 2>/dev/null | sed 's/^ *//;s/.* up //;s/,.*//')
+  up=$(uptime 2>/dev/null | sed 's/^ *//;s/.* up //;s/,.*//;s/^ *//')
   [[ -n $up ]] || up="n/d"
   load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
   [[ -n $load ]] || load="n/d"
   mem=$(free -m 2>/dev/null | awk '/^Mem:/ {if ($2 > 0) printf "%d%%", ($3 * 100) / $2}')
   [[ -n $mem ]] || mem="n/d"
+  swap=$(free -m 2>/dev/null | awk '/^Swap:/ {if ($2 > 0) printf "%d%%", ($3 * 100) / $2; else printf "off"}')
+  [[ -n $swap ]] || swap="n/d"
   rootpct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')
   [[ -n $rootpct ]] || rootpct="?"
   failed="n/d"
@@ -167,9 +171,9 @@ refresh_status() {
   else
     fw="inativo"
   fi
-  STATUS_LINE1="  $(hostname -s 2>/dev/null || hostname)  |  $RHEL_LABEL  |  $ip  |  up $up"
-  STATUS_LINE2="  load $load  |  mem $mem  |  / $rootpct%  |  failed $failed  |  VG/LV $vg/$lv  |  batch $batch"
-  STATUS_LINE3="  SELinux $selinux  |  firewall $fw  |  log $(basename "$LOG_FILE")"
+  STATUS_LINE1="  HOST  $(hostname -s 2>/dev/null || hostname)  |  $RHEL_LABEL  |  kernel ${kernel%%-*}  |  $ip"
+  STATUS_LINE2="  USO   up $up  |  load $load  |  mem $mem  |  swap $swap  |  / $rootpct%"
+  STATUS_LINE3="  SEG   SELinux $selinux  |  fw $fw  |  fail $failed  |  LVM $vg/$lv  |  batch $batch"
   STATUS_TS=$(date +%s)
 }
 
@@ -182,13 +186,127 @@ show_menu() {
   local title=$1 prompt=$2
   shift 2
   whiptail --backtitle "$BACKTITLE" --title "$title" \
-    --menu "$prompt"$'\n\n'"$(status_block)"$'\n\n  '"$(ui_footer)" \
+    --fb --notags --ok-button "Selecionar" --cancel-button "Voltar" \
+    --menu "$prompt"$'\n'"$(ui_rule)"$'\n'"$(status_block)"$'\n'"$MENU_HINT"$'\n'"  $(ui_footer)" \
     "$UI_H" "$UI_W" "$MENU_ROWS" "$@" 3>&1 1>&2 2>&3
+}
+
+action_command_hint() {
+  local item=$1
+  case $item in
+    "Consultar volumes"*) printf 'pvs; vgs; lvs; df -hT' ;;
+    "Consultar interfaces"*) printf 'ip -o link show; ip -4 -o addr show; nmcli device status' ;;
+    "Testar conectividade"*) printf 'ping -c 2; teste TCP via /dev/tcp' ;;
+    "Consultar rotas"*) printf 'ip route; ip neigh; cat /etc/resolv.conf' ;;
+    "Consultar servicos essenciais"*) printf 'systemctl is-active/is-enabled (RHEL 7+) ou service/chkconfig (RHEL 6)' ;;
+    "Consultar status ("*) printf 'systemctl status <servico> ou service <servico> status' ;;
+    "Consultar logs recentes"*) printf 'journalctl -u <servico> ou tail -n 120 /var/log/messages' ;;
+    "Consultar servicos com falha"*) printf 'systemctl --failed (RHEL 7+) ou service --status-all (RHEL 6)' ;;
+    "Consultar processos"*) printf 'ps -eo pid,user,pcpu,pmem,comm' ;;
+    "Consultar cron"*) printf 'crontab -l; ls /etc/cron.d; systemctl list-timers' ;;
+    "Consultar repositorios"*) printf 'dnf repolist ou yum repolist' ;;
+    "Consultar atualizacoes"*) printf 'dnf check-update ou yum check-update' ;;
+    "Consultar historico"*) printf 'dnf history ou yum history' ;;
+    "Buscar pacote"*) printf 'dnf search ou yum search' ;;
+    "Consultar informacoes"*) printf 'dnf info ou yum info' ;;
+    "Consultar Subscription"*) printf 'subscription-manager status; identity; repos --list-enabled' ;;
+    "Consultar firewall"*) printf 'firewall-cmd --state/--list-all ou iptables -L -n -v' ;;
+    "Consultar SELinux"*) printf 'sestatus; getenforce' ;;
+    "Consultar negacoes"*) printf 'ausearch -m AVC,USER_AVC -ts recent' ;;
+    "Auditar configuracao do SSH"*) printf 'sshd -T; ss -tlnp' ;;
+    "Testar configuracao do SSH"*) printf 'sshd -t' ;;
+    "Consultar data"*) printf 'date; timedatectl; hwclock' ;;
+    "Consultar NTP"*) printf 'chronyc tracking ou ntpq -p' ;;
+    "Consultar sysctl"*) printf 'sysctl <chaves>; ls /etc/sysctl.d' ;;
+    "Consultar boot"*) printf 'uname -r; systemctl get-default; grubby --default-kernel' ;;
+    "Consultar compatibilidade"*) printf 'Perfil interno do RHEL (sem comando de sistema)' ;;
+    "Consultar uso do swap"*) printf 'cat /proc/swaps; free -m' ;;
+    "Consultar discos"*) printf 'lsblk; fdisk -l' ;;
+    "Consultar multipath"*) printf 'multipath -ll; leitura de /sys/class/fc_host' ;;
+    "Uso de filesystems"*) printf 'df -hT; df -i' ;;
+    "Consultar usuarios"*) printf 'getent passwd; getent group; who; last' ;;
+    "Logs recentes"*) printf 'journalctl -n 120 ou tail -n 120 /var/log/messages' ;;
+    "Consultar logs"*) printf 'journalctl -n 120 ou tail -n 120 /var/log/messages' ;;
+    "Consultar ultimas"*|"Consultar erros"*|"Consultar status do arquivo"*) printf 'tail/grep em /var/log/rhel_admin_manager.log' ;;
+    "Consultar relatorio"*) printf 'Leitura do relatorio e logs do ultimo lote' ;;
+    "Ajuda rapida"*|"Compatibilidade da versao"*) printf 'Conteudo interno do painel (sem comando de sistema).' ;;
+    *"(modifica"*) printf 'Os comandos exatos serao exibidos na tela de confirmacao, antes de executar.' ;;
+    *"(destrutivo"*) printf 'Os comandos exatos serao exibidos; a execucao exige digitar SIM.' ;;
+    *"(interativo"*) printf 'Abre uma sessao SSH interativa; nada e executado automaticamente.' ;;
+    *"(contem acoes"*|*"(abre menu"*|*"(abre opcoes"*) printf 'A proxima tela lista as acoes e o impacto de cada uma.' ;;
+    *"(somente leitura"*) printf 'Somente comandos de leitura; o resultado sera exibido.' ;;
+    *) printf 'Consulte a proxima tela para ver os parametros e comandos.' ;;
+  esac
+}
+
+select_action() {
+  local title=$1 prompt=$2
+  shift 2
+  local -a raw=("$@") display=()
+  local i tag item impact hint text next
+  for ((i = 0; i < ${#raw[@]}; i += 2)); do
+    if [[ ${raw[$i]} == 0 ]]; then
+      display+=("${raw[$i]}" "${raw[$((i + 1))]}")
+    else
+      display+=("${raw[$i]}" "${raw[$((i + 1))]}  [detalhes]")
+    fi
+  done
+  MENU_HINT="  Setas: navegar  |  Enter: abrir detalhes e riscos  |  Esc: voltar"
+  tag=$(show_menu "$title" "$prompt" "${display[@]}") || return 1
+  for ((i = 0; i < ${#raw[@]}; i += 2)); do
+    if [[ ${raw[$i]} == "$tag" ]]; then
+      item=${raw[$((i + 1))]}
+      break
+    fi
+  done
+  [[ -n $item ]] || item=$tag
+  case $item in
+    *"(destrutivo"*) impact=destrutivo ;;
+    *"(modifica"*) impact=modifica ;;
+    *"(somente leitura"*) impact=leitura ;;
+    *"(interativo"*) impact=interativo ;;
+    *"(contem acoes"*|*"(abre menu"*|*"(abre opcoes"*) impact=menu ;;
+    *) impact=info ;;
+  esac
+  hint=$(action_command_hint "$item")
+  text=$'== ACAO SELECIONADA ==\n'"$item"
+  text+=$'\n\n== O QUE ACONTECE ==\n'
+  case $impact in
+    leitura) text+="Esta opcao apenas consulta o sistema. Nenhuma alteracao sera feita." ;;
+    modifica) text+="Esta opcao inicia uma alteracao. Nada sera executado agora. Voce informara os parametros e revisara os comandos exatos antes de confirmar." ;;
+    destrutivo) text+="Esta opcao pode remover dados, interromper servicos ou bloquear acesso. Nada sera executado agora. Voce revisara os comandos e digitara SIM para confirmar." ;;
+    interativo) text+="Esta opcao abre uma sessao interativa. Nenhuma alteracao automatica sera feita." ;;
+    menu) text+="Esta opcao abre a proxima tela de escolhas. Nenhuma alteracao sera feita agora." ;;
+    *) text+="Esta opcao abre a proxima tela do painel." ;;
+  esac
+  text+=$'\n\n== COMANDOS ==\n'"$hint"
+  text+=$'\n\n== RISCOS E CUIDADOS ==\n'
+  case $impact in
+    leitura) text+="Classificacao: BAIXO (somente leitura)."$'\n'"Sem risco de escrita: apenas leitura de dados do sistema." ;;
+    modifica) text+="Classificacao: MEDIO (modifica o sistema)."$'\n'"Pode alterar configuracao do sistema. Backup e confirmacao sao aplicados quando cabivel." ;;
+    destrutivo) text+="Classificacao: ALTO (destrutivo)."$'\n'"Risco alto: perda de dados, indisponibilidade ou perda de acesso remoto. Use console/IPMI quando a rede for afetada." ;;
+    interativo) text+="Classificacao: VARIAVEL (interativo)."$'\n'"O risco depende do que voce executar na sessao. O painel nao executa nada sozinho." ;;
+    menu) text+="Classificacao: BAIXO (navegacao)."$'\n'"Apenas navegacao; nenhuma alteracao agora." ;;
+    *) text+="Classificacao: INDEFINIDA."$'\n'"Sem impacto conhecido." ;;
+  esac
+  text+=$'\n\n== PROXIMO PASSO ==\n'
+  case $impact in
+    leitura|interativo|menu|info) text+="Feche esta tela para continuar." ;;
+    *) text+="Feche esta tela e confirme 'Continuar' para informar os parametros." ;;
+  esac
+  show_text "Detalhes - $title" "$text" || return 1
+  case $impact in
+    modifica|destrutivo)
+      ui_yesno "Continuar" "Deseja abrir a configuracao desta acao?" || return 1
+      ;;
+  esac
+  printf '%s' "$tag"
 }
 
 ask() {
   local title=$1 prompt=$2 default=${3:-} ans
-  ans=$(whiptail --backtitle "$BACKTITLE" --title "$title" --inputbox \
+  ans=$(whiptail --backtitle "$BACKTITLE" --title "$title" --fb \
+    --ok-button "Confirmar" --cancel-button "Cancelar" --inputbox \
     "$prompt" 12 "$UI_W" "$default" 3>&1 1>&2 2>&3) || return 1
   ans=$(printf '%s' "$ans" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   printf '%s' "$ans"
@@ -197,7 +315,7 @@ ask() {
 ui_msg() {
   local h=14
   ((h > UI_H)) && h=$UI_H
-  whiptail --backtitle "$BACKTITLE" --title "$1" --msgbox "$2" "$h" "$UI_W"
+  whiptail --backtitle "$BACKTITLE" --title "$1" --fb --ok-button "Entendi" --msgbox "$2" "$h" "$UI_W"
 }
 
 ui_error() {
@@ -208,13 +326,13 @@ ui_error() {
   fi
   text+=$'\n\n== AUDITORIA ==\n'"$LOG_FILE"
   ((h > UI_H)) && h=$UI_H
-  whiptail --backtitle "$BACKTITLE" --title "ERRO - $title" --msgbox "$text" "$h" "$UI_W"
+  whiptail --backtitle "$BACKTITLE" --title "ERRO - $title" --fb --ok-button "Entendi" --msgbox "$text" "$h" "$UI_W"
 }
 
 ui_ok() {
   local h=14
   ((h > UI_H)) && h=$UI_H
-  whiptail --backtitle "$BACKTITLE" --title "$1" --msgbox "$2"$'\n\n== AUDITORIA ==\n'"$LOG_FILE" "$h" "$UI_W"
+  whiptail --backtitle "$BACKTITLE" --title "$1" --fb --ok-button "OK" --msgbox "$2"$'\n\n== AUDITORIA ==\n'"$LOG_FILE" "$h" "$UI_W"
 }
 
 confirm_exec() {
@@ -230,7 +348,8 @@ confirm_strong() {
   local title=$1 cmds=$2 ans
   show_text "CONFIRMAR - $title" \
     $'== OPERACAO DESTRUTIVA ==\n\n'"$cmds"$'\n\n== CONFIRMACAO ==\n'"Digite SIM na proxima tela para continuar." || return 1
-  ans=$(whiptail --backtitle "$BACKTITLE" --title "CONFIRMAR - $title" --inputbox \
+  ans=$(whiptail --backtitle "$BACKTITLE" --title "CONFIRMAR - $title" --fb \
+    --ok-button "Confirmar" --cancel-button "Cancelar" --inputbox \
     "Digite SIM para confirmar:" 10 "$UI_W" "" 3>&1 1>&2 2>&3) || return 1
   [[ $ans == SIM ]]
 }
@@ -238,8 +357,8 @@ confirm_strong() {
 ui_yesno() {
   local h=14
   ((h > UI_H)) && h=$UI_H
-  whiptail --backtitle "$BACKTITLE" --title "$1" --defaultno \
-    --yesno "$2" "$h" "$UI_W"
+  whiptail --backtitle "$BACKTITLE" --title "$1" --fb --defaultno \
+    --yes-button "Confirmar" --no-button "Cancelar" --yesno "$2" "$h" "$UI_W"
 }
 
 confirm_batch() {
@@ -247,7 +366,8 @@ confirm_batch() {
   show_text "CONFIRMAR BATCH - $title" \
     "$text"$'\n\n== MODO ==\n'"$([[ $strong == 1 ]] && printf 'DESTRUTIVO: sera exigido SIM.' || printf 'Paralelo via TMUX.')"$'\n'"Revise os comandos acima antes de confirmar." || return 1
   if ((strong)); then
-    ans=$(whiptail --backtitle "$BACKTITLE" --title "CONFIRMAR - $title" --inputbox \
+    ans=$(whiptail --backtitle "$BACKTITLE" --title "CONFIRMAR - $title" --fb \
+      --ok-button "Confirmar" --cancel-button "Cancelar" --inputbox \
       "Digite SIM para confirmar:" 10 "$UI_W" "" 3>&1 1>&2 2>&3) || return 1
     [[ $ans == SIM ]]
   else
@@ -259,8 +379,8 @@ show_text() {
   local title=$1 text=$2 f
   f=$(mktemp "$TMP_DIR/text.XXXXXX") || return 1
   printf '%s\n' "$text" >"$f"
-  whiptail --backtitle "$BACKTITLE" --title "$title" --scrolltext \
-    --textbox "$f" "$UI_H" "$UI_W"
+  whiptail --backtitle "$BACKTITLE" --title "$title" --fb --ok-button "Fechar" \
+    --scrolltext --textbox "$f" "$UI_H" "$UI_W"
   rm -f "$f"
 }
 
@@ -1211,7 +1331,7 @@ configure_nm() {
   extra="Interface: $NET_IFACE | Conexao: $conn | Modo: $(network_mode_label)"$'\n'
   extra+="$(version_network_note)"$'\n'
   extra+="Uma mudanca de IP pode interromper a sessao SSH. Use console/IPMI."
-  confirm_exec "Configurar rede via nmcli" "$cmds" "$extra" || return 0
+  confirm_strong "Configurar rede via nmcli" "$cmds" "$extra" || return 0
   if ((${#c_add[@]} > 0)); then
     if ! run_cmd "${c_add[@]}"; then
       ui_error "Falha ao criar conexao" "A sequencia foi interrompida." "$RUN_OUT"
@@ -1271,7 +1391,7 @@ configure_ifcfg() {
   extra="Interface: $NET_IFACE | IP: $NET_IP/$NET_PREFIX | Modo: $(network_mode_label)"$'\n'
   extra+="Backup: $backup"$'\n'"$(version_network_note)"$'\n'
   extra+="Uma mudanca de IP pode interromper a sessao SSH. Use console/IPMI."
-  confirm_exec "Configurar rede via ifcfg" "$cmds" "$extra" || return 0
+  confirm_strong "Configurar rede via ifcfg" "$cmds" "$extra" || return 0
   if ! run_shell "$cmds"; then
     ui_error "Falha ao configurar rede" "A sequencia foi interrompida. Verifique console/IPMI e o backup $backup." "$RUN_OUT"
     return 1
@@ -1392,7 +1512,7 @@ configure_dhcp() {
     cmds+=$(cmd_line "${c_mod[@]}")$'\n'$(cmd_line "${c_up[@]}")
     cmds_extra="Interface: $iface | Conexao: $conn | Modo: DHCP"$'\n'"$(version_network_note)"$'\n'
     cmds_extra+="A mudanca pode interromper a sessao SSH. Use console/IPMI."
-    confirm_exec "Configurar DHCP via nmcli" "$cmds" "$cmds_extra" || return 0
+    confirm_strong "Configurar DHCP via nmcli" "$cmds" "$cmds_extra" || return 0
     if ((${#c_add[@]} > 0)); then
       if ! run_cmd "${c_add[@]}"; then
         ui_error "Falha ao criar conexao" "A sequencia foi interrompida." "$RUN_OUT"
@@ -1438,7 +1558,7 @@ configure_dhcp() {
   cmds+="service network restart"
   cmds_extra="Interface: $iface | Modo: DHCP | Backup: $backup"$'\n'"$(version_network_note)"$'\n'
   cmds_extra+="A mudanca pode interromper a sessao SSH. Use console/IPMI."
-  confirm_exec "Configurar DHCP via ifcfg" "$cmds" "$cmds_extra" || return 0
+  confirm_strong "Configurar DHCP via ifcfg" "$cmds" "$cmds_extra" || return 0
   if ! run_shell "$cmds"; then
     ui_error "Falha ao configurar DHCP" "A sequencia foi interrompida. Backup: $backup" "$RUN_OUT"
     return 1
@@ -1644,9 +1764,9 @@ batch_wrap_remote() {
 batch_session_check() {
   tmux has-session -t "$BATCH_SESSION" 2>/dev/null || return 0
   local c
-  c=$(show_menu "Sessao TMUX existente" "A sessao '$BATCH_SESSION' ja existe." \
-    attach "[seguro] Anexar a sessao existente" \
-    new "[ATENCAO] Encerrar a sessao e iniciar novo lote" \
+  c=$(select_action "Sessao TMUX existente" "A sessao '$BATCH_SESSION' ja existe." \
+    attach "Anexar a sessao existente (interativo)" \
+    new "! Encerrar a sessao e iniciar novo lote (destrutivo)" \
     0 "Cancelar") || return 1
   case $c in
     attach)
@@ -1655,7 +1775,7 @@ batch_session_check() {
       return 1
       ;;
     new)
-      if ! confirm_exec "Encerrar sessao TMUX" "tmux kill-session -t $(q "$BATCH_SESSION")" \
+      if ! confirm_strong "Encerrar sessao TMUX" "tmux kill-session -t $(q "$BATCH_SESSION")" \
         "Janelas em execucao serao interrompidas."; then
         return 1
       fi
@@ -1956,7 +2076,7 @@ batch_kill_session() {
     ui_msg "TMUX" "Nao existe sessao $BATCH_SESSION."
     return 0
   fi
-  confirm_exec "Encerrar sessao TMUX" "tmux kill-session -t $(q "$BATCH_SESSION")" \
+  confirm_strong "Encerrar sessao TMUX" "tmux kill-session -t $(q "$BATCH_SESSION")" \
     "Todas as janelas e comandos em execucao serao encerrados." || return 0
   if ! run_cmd tmux kill-session -t "$BATCH_SESSION"; then
     ui_error "TMUX" "Nao foi possivel encerrar a sessao." "$RUN_OUT"
@@ -1968,19 +2088,19 @@ batch_kill_session() {
 batch_menu() {
   local c
   while :; do
-    c=$(show_menu "Batch / Frota (TMUX)" "Arquivo: $BATCH_FILE | SSH local: $BATCH_SSH_USER"$'\n'"Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
-      1 "[altera] Inventario: criar / validar" \
-      2 "[altera] Editar inventario" \
-      3 "[seguro] Testar SSH + sudo -n" \
-      4 "[ATENCAO] Atualizacao completa (yum/dnf)" \
-      5 "[ATENCAO] Atualizacao de seguranca" \
-      6 "[ATENCAO] Reiniciar hosts" \
-      7 "[seguro] Coletar diagnostico" \
-      8 "[ATENCAO] Comando personalizado" \
-      9 "[seguro] Abrir SSH interativo em TMUX" \
-      10 "[seguro] Anexar sessao TMUX" \
-      11 "[seguro] Relatorio do ultimo lote" \
-      12 "[ATENCAO] Encerrar sessao TMUX" \
+    c=$(select_action "Operacoes em lote (TMUX)" "Inventario: $BATCH_FILE | SSH local: $BATCH_SSH_USER. Cada opcao abre detalhes." \
+      1 "Criar ou validar inventario (modifica arquivo local)" \
+      2 "Editar inventario (modifica arquivo local)" \
+      3 "Testar SSH e sudo (somente leitura)" \
+      4 "! Atualizar todos os hosts (modifica varios hosts)" \
+      5 "! Aplicar atualizacoes de seguranca (modifica varios hosts)" \
+      6 "! Reiniciar hosts (destrutivo em varios hosts)" \
+      7 "Coletar diagnostico (somente leitura)" \
+      8 "! Executar comando personalizado (destrutivo em varios hosts)" \
+      9 "Abrir SSH interativo em TMUX (interativo)" \
+      10 "Anexar sessao TMUX (interativo)" \
+      11 "Consultar relatorio do ultimo lote (somente leitura)" \
+      12 "! Encerrar sessao TMUX (destrutivo)" \
       0 "Voltar") || return 0
     case $c in
       1) batch_inventory ;;
@@ -2116,10 +2236,10 @@ swap_toggle() {
 swap_menu() {
   local c
   while :; do
-    c=$(show_menu "Swap" "Gerenciamento de memoria swap" \
-      1 "[seguro] Status do swap" \
-      2 "[altera] Ativar dispositivo swap" \
-      3 "[ATENCAO] Desativar dispositivo swap" \
+    c=$(select_action "Swap" "Consultar e ativar memoria de troca. Cada opcao abre detalhes." \
+      1 "Consultar uso do swap (somente leitura)" \
+      2 "Ativar dispositivo swap (modifica o sistema)" \
+      3 "! Desativar dispositivo swap (destrutivo)" \
       0 "Voltar") || return 0
     case $c in
       1) swap_status ;;
@@ -2133,11 +2253,11 @@ swap_menu() {
 storage_root_menu() {
   local c
   while :; do
-    c=$(show_menu "Armazenamento" "LVM, filesystems, discos e swap" \
-      1 "[altera] LVM e File Systems" \
-      2 "[altera] Discos, rescan e HBAs" \
-      3 "[altera] Swap" \
-      4 "[seguro] Uso de filesystems" \
+    c=$(show_menu "Armazenamento" "Escolha uma area. Cada item abre um menu." \
+      1 "LVM e filesystems (abre menu)" \
+      2 "Discos e barramento (abre menu)" \
+      3 "Swap (abre menu)" \
+      4 "Uso de filesystems (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) lvm_menu ;;
@@ -2184,6 +2304,16 @@ recent_logs() {
   fi
   [[ -n $out ]] || out="Nenhum log acessivel."
   show_text "Logs recentes" "$out"
+}
+
+hardware_info() {
+  local out
+  out="=== CPU ==="$'\n'"$(lscpu 2>&1 | head -n 30)"$'\n\n'
+  out+="=== MEMORIA ==="$'\n'"$(lsmem 2>&1 | head -n 20)"$'\n\n'
+  out+="=== DMI ==="$'\n'"$(dmidecode -t system -t bios 2>&1 | head -n 40)"$'\n\n'
+  out+="=== PCI ==="$'\n'"$(lspci 2>&1 | head -n 40)"$'\n\n'
+  out+="=== BLOCK DEVICES ==="$'\n'"$(lsblk 2>&1)"
+  show_text "Inventario de hardware" "$out"
 }
 
 diagnostics() {
@@ -2237,7 +2367,7 @@ dashboard_text() {
   local host kernel up load mem swap rootpct rootfree vgcount lvcount failed nics batch_count batch_state nm fs net out alerts selinux fw rule
   host=$(hostname 2>/dev/null)
   kernel=$(uname -r 2>/dev/null)
-  up=$(uptime 2>/dev/null | sed 's/^ *//;s/.* up //;s/,.*//')
+  up=$(uptime 2>/dev/null | sed 's/^ *//;s/.* up //;s/,.*//;s/^ *//')
   load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
   mem=$(free -m 2>/dev/null | awk '/^Mem:/ {if ($2 > 0) printf "%s/%s MB (%.0f%%)", $3, $2, ($3 * 100) / $2}')
   swap=$(free -m 2>/dev/null | awk '/^Swap:/ {if ($2 > 0) printf "%s/%s MB", $3, $2; else printf "desativado"}')
@@ -2305,6 +2435,7 @@ dashboard_text() {
   out+=$'\n'" ALERTAS"
   out+=$'\n'"$alerts"
   out+="$rule"
+  out+=$'\n'" INTERACAO...: cada acao interna abre detalhes, comandos e riscos."
   out+=$'\n'" AUDITORIA...: $LOG_FILE"
   out+=$'\n'" BATCH LOGS..: /var/log/rhel_admin_manager.batch.*"
   printf '%s\n' "$out"
@@ -2354,10 +2485,13 @@ help_text() {
     "  sudo ./rhel_admin_manager.sh" \
     "  Requer root, whiptail/newt, ssh, tmux e sudo para o modulo batch." \
     "" \
-    "LEGENDA DOS MENUS" \
-    "  [seguro]  somente leitura / sem alteracao." \
-    "  [altera]  escrita controlada, com backup quando aplicavel." \
-    "  [ATENCAO] risco operacional, destrutivo ou impacto em SSH/servico." \
+    "LEGENDA DAS ACOES" \
+    "  Menus de area apenas navegam. Acoes internas abrem detalhes e pedem confirmacao." \
+    "  [detalhes]            toda acao abre uma tela com o que sera feito, comandos e riscos." \
+    "  !                     destaque visual para acao de risco/destrutiva." \
+    "  (somente leitura)     consulta; nao altera o sistema." \
+    "  (modifica o sistema)  escrita com confirmacao e backup quando aplicavel." \
+    "  (destrutivo)          pode remover dados ou interromper servicos; exige SIM." \
     "" \
     "CONFIRMACAO" \
     "  Toda escrita mostra os comandos exatos em uma tela rolavel." \
@@ -2375,7 +2509,7 @@ help_text() {
     "  Alterar IP pode derrubar a sessao SSH; use console/IPMI." \
     "" \
     "STORAGE / DIAGNOSTICO" \
-    "  LVM/FS, rescan SCSI/FC, discos, multipath/HBAs, swap, uso e logs." \
+    "  LVM/FS, rescan SCSI/FC, discos, multipath/HBAs, swap, uso, hardware e logs." \
     "" \
     "USUARIOS / SERVICOS / PACOTES" \
     "  Cria usuarios/grupos, senha, lock, grupos privilegiados e remocao." \
@@ -2557,9 +2691,9 @@ user_lock_toggle() {
     ui_error "Operacao bloqueada" "Bloquear/desbloquear root nao e permitido."
     return 1
   }
-  action=$(show_menu "Conta de $user" "Selecione a acao:" \
-    lock "[altera] Bloquear conta" \
-    unlock "[altera] Desbloquear conta") || return 1
+  action=$(select_action "Conta de $user" "Selecione a acao:" \
+    lock "Bloquear conta (modifica o sistema)" \
+    unlock "Desbloquear conta (modifica o sistema)") || return 1
   if [[ $action == lock ]]; then
     cmd=(passwd -l "$user")
   else
@@ -2653,16 +2787,16 @@ delete_group() {
 users_menu() {
   local c
   while :; do
-    c=$(show_menu "Usuarios e Grupos" "Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
-      1 "[seguro] Visao geral de usuarios e grupos" \
-      2 "[altera] Criar usuario" \
-      3 "[altera] Definir senha (interativo)" \
-      4 "[altera] Forcar troca de senha" \
-      5 "[altera] Adicionar usuario a grupo" \
-      6 "[altera] Bloquear / desbloquear conta" \
-      7 "[altera] Criar grupo" \
-      8 "[ATENCAO] Excluir usuario" \
-      9 "[ATENCAO] Excluir grupo" \
+    c=$(select_action "Usuarios e grupos" "Gerencie contas locais. Cada opcao abre detalhes antes de executar." \
+      1 "Consultar usuarios e grupos (somente leitura)" \
+      2 "Criar usuario (modifica o sistema)" \
+      3 "Definir senha interativamente (modifica o sistema)" \
+      4 "Forcar troca de senha (modifica o sistema)" \
+      5 "Adicionar usuario a grupo (modifica o sistema)" \
+      6 "Abrir opcoes de bloqueio de conta (abre opcoes)" \
+      7 "Criar grupo (modifica o sistema)" \
+      8 "! Excluir usuario (destrutivo)" \
+      9 "! Excluir grupo (destrutivo)" \
       0 "Voltar") || return 0
     case $c in
       1) users_overview ;;
@@ -2721,15 +2855,15 @@ manage_service() {
   local svc action cmd extra
   local -a c
   svc=$(select_service) || return 1
-  action=$(show_menu "Gerenciar $svc" "Backend: $(service_backend)" \
-    status "[seguro] Status" \
-    logs "[seguro] Logs recentes do servico" \
-    start "[altera] Iniciar" \
-    stop "[ATENCAO] Parar" \
-    restart "[ATENCAO] Reiniciar" \
-    reload "[altera] Recarregar" \
-    enable "[altera] Habilitar no boot" \
-    disable "[ATENCAO] Desabilitar no boot") || return 1
+  action=$(select_action "Gerenciar $svc" "Backend: $(service_backend)" \
+    status "Consultar status (somente leitura)" \
+    logs "Consultar logs recentes (somente leitura)" \
+    start "Iniciar servico (modifica o sistema)" \
+    stop "! Parar servico (destrutivo)" \
+    restart "! Reiniciar servico (destrutivo)" \
+    reload "Recarregar configuracao (modifica o sistema)" \
+    enable "Habilitar no boot (modifica o sistema)" \
+    disable "! Desabilitar no boot (destrutivo)") || return 1
   if [[ $action == status ]]; then
     if ((RHEL_VER >= 7)); then
       show_text "Status - $svc" "$(systemctl status "$svc" --no-pager 2>&1)"
@@ -2812,9 +2946,9 @@ kill_process() {
     ui_error "Processo ausente" "PID $pid nao existe mais."
     return 1
   fi
-  sig=$(show_menu "Sinal para PID $pid" "Escolha o sinal:" \
-    TERM "[altera] SIGTERM (encerramento gracioso)" \
-    KILL "[ATENCAO] SIGKILL (forcado)") || return 1
+  sig=$(select_action "Sinal para PID $pid" "Escolha como encerrar o processo." \
+    TERM "SIGTERM - encerramento gracioso (modifica o sistema)" \
+    KILL "! SIGKILL - forcar encerramento (destrutivo)") || return 1
   c=(kill -"$sig" "$pid")
   confirm_strong "Encerrar processo" "$(cmd_line "${c[@]}")" \
     "PID: $pid"$'\n'"SIGKILL pode causar perda de dados no processo." || return 0
@@ -2840,13 +2974,13 @@ scheduled_jobs() {
 services_menu() {
   local c
   while :; do
-    c=$(show_menu "Servicos e Processos" "Backend: $(service_backend) | Legenda: [seguro] [altera] [ATENCAO]" \
-      1 "[seguro] Status de servicos essenciais" \
-      2 "[seguro] Servicos com falha" \
-      3 "[altera] Gerenciar servico (start/stop/enable)" \
-      4 "[seguro] Top processos (CPU/memoria)" \
-      5 "[ATENCAO] Encerrar processo" \
-      6 "[seguro] Cron e systemd timers" \
+    c=$(select_action "Servicos e processos" "Backend: $(service_backend). Cada opcao abre detalhes antes de executar." \
+      1 "Consultar servicos essenciais (somente leitura)" \
+      2 "Consultar servicos com falha (somente leitura)" \
+      3 "Abrir gerenciamento de servico (abre opcoes)" \
+      4 "Consultar processos por CPU e memoria (somente leitura)" \
+      5 "! Encerrar processo (destrutivo)" \
+      6 "Consultar cron e timers (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) service_status ;;
@@ -3011,17 +3145,17 @@ packages_menu() {
   local c pkg
   pkg=$(pkg_backend 2>/dev/null || printf 'n/d')
   while :; do
-    c=$(show_menu "Pacotes e Atualizacoes" "Backend: $pkg | Legenda: [seguro] [altera] [ATENCAO]" \
-      1 "[seguro] Repositorios configurados" \
-      2 "[seguro] Atualizacoes disponiveis" \
-      3 "[seguro] Historico de transacoes" \
-      4 "[seguro] Buscar pacote" \
-      5 "[seguro] Informacoes de pacote" \
-      6 "[altera] Instalar pacote" \
-      7 "[ATENCAO] Remover pacote" \
-      8 "[ATENCAO] Atualizar todos os pacotes" \
-      9 "[ATENCAO] Atualizacoes de seguranca" \
-      10 "[seguro] Subscription Manager (status)" \
+    c=$(select_action "Pacotes e atualizacoes" "Backend: $pkg. Cada opcao abre detalhes antes de executar." \
+      1 "Consultar repositorios (somente leitura)" \
+      2 "Consultar atualizacoes disponiveis (somente leitura)" \
+      3 "Consultar historico de transacoes (somente leitura)" \
+      4 "Buscar pacote (somente leitura)" \
+      5 "Consultar informacoes de pacote (somente leitura)" \
+      6 "Instalar pacote (modifica o sistema)" \
+      7 "! Remover pacote (destrutivo)" \
+      8 "! Atualizar todos (modifica o sistema; pode exigir reboot)" \
+      9 "! Aplicar atualizacoes de seguranca (modifica o sistema)" \
+      10 "Consultar Subscription Manager (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) pkg_repos ;;
@@ -3065,12 +3199,12 @@ firewall_change() {
     ui_error "Firewall" "firewalld nao esta em execucao."
     return 1
   fi
-  action=$(show_menu "Alterar firewall" "Acoes via firewalld permanente + reload:" \
-    add-service "[altera] Adicionar servico" \
-    remove-service "[ATENCAO] Remover servico" \
-    add-port "[altera] Adicionar porta" \
-    remove-port "[ATENCAO] Remover porta" \
-    reload "[altera] Recarregar regras") || return 1
+  action=$(select_action "Alterar firewall" "As regras serao permanentes e aplicadas com reload." \
+    add-service "Adicionar servico (modifica a rede)" \
+    remove-service "! Remover servico (destrutivo)" \
+    add-port "Adicionar porta (modifica a rede)" \
+    remove-port "! Remover porta (destrutivo)" \
+    reload "Recarregar regras (modifica a rede)") || return 1
   extra=""
   case $action in
     add-service|remove-service)
@@ -3135,10 +3269,10 @@ selinux_mode() {
   need_bin getenforce libselinux-utils || return 1
   need_bin setenforce libselinux-utils || return 1
   current=$(getenforce 2>/dev/null)
-  target=$(show_menu "Modo SELinux" "Modo atual: ${current:-desconhecido}" \
-    enforcing "[ATENCAO] Enforcing (aplica agora e persiste)" \
-    permissive "[ATENCAO] Permissive (aplica agora e persiste)" \
-    disabled "[ATENCAO] Disabled (persiste; exige reboot)") || return 1
+  target=$(select_action "Modo SELinux" "Modo atual: ${current:-desconhecido}" \
+    enforcing "! Enforcing - aplicar agora e persistir (destrutivo)" \
+    permissive "! Permissive - aplicar agora e persistir (destrutivo)" \
+    disabled "! Disabled - persistir e exigir reboot (destrutivo)") || return 1
   conf="/etc/selinux/config"
   backup="$conf.bak.$(date +%Y%m%d%H%M%S)"
   c1=()
@@ -3192,9 +3326,9 @@ selinux_booleans() {
     ui_error "Booleano ausente" "Booleano nao encontrado: $bo"
     return 1
   }
-  onoff=$(show_menu "Booleano $bo" "Valor:" \
-    on "[altera] on" \
-    off "[ATENCAO] off") || return 1
+  onoff=$(select_action "Booleano $bo" "Valor:" \
+    on "Ativar booleano (modifica o sistema)" \
+    off "! Desativar booleano (destrutivo)") || return 1
   c=(setsebool -P "$bo" "$onoff")
   if [[ $onoff == off ]]; then
     confirm_strong "SELinux boolean" "$(cmd_line "${c[@]}")" \
@@ -3249,15 +3383,15 @@ ssh_test_config() {
 security_menu() {
   local c
   while :; do
-    c=$(show_menu "Seguranca" "Firewall, SELinux e SSH | Legenda: [seguro] [altera] [ATENCAO]" \
-      1 "[seguro] Firewall: status e regras" \
-      2 "[ATENCAO] Firewall: adicionar/remover servico ou porta (RHEL7+)" \
-      3 "[seguro] SELinux: status" \
-      4 "[ATENCAO] SELinux: alterar modo" \
-      5 "[altera] SELinux: alterar booleano" \
-      6 "[seguro] SELinux: negacoes recentes" \
-      7 "[seguro] SSH: auditoria de configuracao" \
-      8 "[seguro] SSH: testar configuracao" \
+    c=$(select_action "Seguranca do sistema" "Firewall, SELinux e SSH. Cada opcao abre detalhes antes de executar." \
+      1 "Consultar firewall (somente leitura)" \
+      2 "Abrir opcoes de firewall (abre opcoes)" \
+      3 "Consultar SELinux (somente leitura)" \
+      4 "Abrir opcoes do SELinux (abre opcoes)" \
+      5 "Alterar booleano do SELinux (modifica o sistema)" \
+      6 "Consultar negacoes do SELinux (somente leitura)" \
+      7 "Auditar configuracao do SSH (somente leitura)" \
+      8 "Testar configuracao do SSH (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) firewall_status ;;
@@ -3342,9 +3476,9 @@ ntp_status() {
 ntp_toggle() {
   local action cmds
   local -a c1 c2
-  action=$(show_menu "NTP" "Sincronizacao de horario:" \
-    on "[altera] Habilitar NTP" \
-    off "[ATENCAO] Desabilitar NTP") || return 1
+  action=$(select_action "NTP" "Sincronizacao de horario do servidor." \
+    on "Habilitar sincronizacao NTP (modifica o sistema)" \
+    off "! Desabilitar sincronizacao NTP (destrutivo)") || return 1
   if ((RHEL_VER >= 7)); then
     need_bin timedatectl systemd || return 1
     if [[ $action == on ]]; then
@@ -3405,9 +3539,9 @@ sysctl_set() {
     [[ $value =~ $re ]] && break
     ui_error "Valor invalido" "Use letras, numeros, espaco, ponto, virgula, dois-pontos, barra ou hifen."
   done
-  mode=$(show_menu "Aplicar sysctl" "Escopo da alteracao:" \
-    runtime "[altera] Temporario (ate reboot)" \
-    persistent "[ATENCAO] Persistente (sobrevive ao reboot)") || return 1
+  mode=$(select_action "Aplicar sysctl" "Escolha o escopo da alteracao." \
+    runtime "Aplicar temporariamente (modifica o sistema; volta ao reboot)" \
+    persistent "! Aplicar permanentemente (destrutivo; sobrevive ao reboot)") || return 1
   if [[ $mode == runtime ]]; then
     c=(sysctl -w "$key=$value")
     confirm_exec "Sysctl temporario" "$(cmd_line "${c[@]}")" "$key: $current -> $value" || return 0
@@ -3476,18 +3610,17 @@ cancel_shutdown() {
 system_menu() {
   local c
   while :; do
-    c=$(show_menu "Sistema" "Data/hora, NTP, kernel e energia | Legenda: [seguro] [altera] [ATENCAO]" \
-      1 "[seguro] Data, hora e timezone" \
-      2 "[altera] Alterar timezone" \
-      3 "[seguro] Status do NTP/chrony" \
-      4 "[altera] Habilitar/desabilitar NTP" \
-      5 "[seguro] Visualizar sysctl" \
-      6 "[ATENCAO] Aplicar sysctl" \
-      7 "[seguro] Boot e kernel" \
-      8 "[ATENCAO] Reiniciar servidor" \
-      9 "[ATENCAO] Desligar servidor" \
-      10 "[altera] Cancelar shutdown" \
-      11 "[seguro] Compatibilidade da versao" \
+    c=$(select_action "Sistema e energia" "Data/hora, NTP, kernel e energia. Cada opcao abre detalhes antes de executar." \
+      1 "Consultar data, hora e timezone (somente leitura)" \
+      2 "Alterar timezone (modifica o sistema)" \
+      3 "Consultar NTP/chrony (somente leitura)" \
+      4 "Abrir opcoes de NTP (abre opcoes)" \
+      5 "Consultar sysctl (somente leitura)" \
+      6 "! Aplicar sysctl (modifica o sistema)" \
+      7 "Consultar boot e kernel (somente leitura)" \
+      8 "! Reiniciar servidor (destrutivo)" \
+      9 "! Desligar servidor (destrutivo)" \
+      10 "Cancelar shutdown (modifica o sistema)" \
       0 "Voltar") || return 0
     case $c in
       1) time_status ;;
@@ -3500,7 +3633,21 @@ system_menu() {
       8) reboot_system ;;
       9) shutdown_system ;;
       10) cancel_shutdown ;;
-      11) show_text "Compatibilidade $RHEL_LABEL" "$(version_profile_text)" ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+help_menu() {
+  local c
+  while :; do
+    c=$(select_action "Ajuda e compatibilidade" "Consulte instrucoes e diferencas entre versoes. Cada opcao abre detalhes." \
+      1 "Ajuda rapida (somente leitura)" \
+      2 "Compatibilidade da versao (somente leitura)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) show_text "Ajuda rapida" "$(help_text)" ;;
+      2) show_text "Compatibilidade $RHEL_LABEL" "$(version_profile_text)" ;;
       0) return 0 ;;
     esac
   done
@@ -3509,17 +3656,15 @@ system_menu() {
 audit_menu() {
   local c
   while :; do
-    c=$(show_menu "Auditoria / Logs" "Somente leitura | Arquivo: $LOG_FILE" \
-      1 "[seguro] Ultimas 200 linhas" \
-      2 "[seguro] Somente erros e falhas" \
-      3 "[seguro] Status do arquivo de log" \
-      4 "[seguro] Ajuda rapida" \
+    c=$(select_action "Auditoria e logs" "Somente leitura. Cada opcao abre detalhes. Arquivo: $LOG_FILE" \
+      1 "Consultar ultimas 200 linhas (somente leitura)" \
+      2 "Consultar erros e falhas (somente leitura)" \
+      3 "Consultar status do arquivo de log (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) log_recent ;;
       2) log_errors ;;
       3) log_status ;;
-      4) show_text "Ajuda rapida" "$(help_text)" ;;
       0) return 0 ;;
     esac
   done
@@ -3528,14 +3673,14 @@ audit_menu() {
 lvm_menu() {
   local c
   while :; do
-    c=$(show_menu "LVM e File Systems" "Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
-      1 "[seguro] Visao geral (PV / VG / LV / FS)" \
-      2 "[altera] Criar LV (com FS opcional)" \
-      3 "[altera] Estender LV e FS online" \
-      4 "[ATENCAO] Formatar LV existente" \
-      5 "[altera] Montar FS com UUID no fstab" \
-      6 "[ATENCAO] Desmontar FS e remover do fstab" \
-      7 "[ATENCAO] Excluir LV" \
+    c=$(select_action "LVM e File Systems" "Escolha a tarefa. Cada opcao abre detalhes e mostra o impacto." \
+      1 "Consultar volumes e filesystems (somente leitura)" \
+      2 "Criar volume logico (modifica o sistema)" \
+      3 "Ampliar volume logico e filesystem (modifica o sistema)" \
+      4 "! Formatar volume logico (destrutivo)" \
+      5 "Montar filesystem e gravar no fstab (modifica o sistema)" \
+      6 "! Desmontar filesystem e remover do fstab (destrutivo)" \
+      7 "! Excluir volume logico (destrutivo)" \
       0 "Voltar") || return 0
     case $c in
       1) lvm_overview ;;
@@ -3553,14 +3698,14 @@ lvm_menu() {
 network_menu() {
   local c
   while :; do
-    c=$(show_menu "Rede" "Backend: $(version_network_backend)"$'\n'"Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
-      1 "[seguro] Listar interfaces ativas e inativas" \
-      2 "[ATENCAO] IPv4 completo (IP + mascara + gateway + DNS)" \
-      3 "[ATENCAO] IPv4 heartbeat/isolado (sem gateway/DNS)" \
-      4 "[ATENCAO] Configurar DHCP (automatico)" \
-      5 "[seguro] Testar conectividade (ping / porta)" \
-      6 "[seguro] Rotas, DNS e ARP" \
-      7 "[altera] Definir hostname / /etc/hosts" \
+    c=$(select_action "Rede e conectividade" "Backend: $(version_network_backend). Alteracoes podem interromper o SSH; cada opcao abre detalhes." \
+      1 "Consultar interfaces e enderecos (somente leitura)" \
+      2 "! Alterar IPv4 (modifica a rede; pode afetar SSH)" \
+      3 "! Configurar heartbeat (modifica a rede; pode afetar SSH)" \
+      4 "! Alterar para DHCP (modifica a rede; pode afetar SSH)" \
+      5 "Testar conectividade (somente leitura)" \
+      6 "Consultar rotas, DNS e ARP (somente leitura)" \
+      7 "Definir hostname e /etc/hosts (modifica o sistema)" \
       0 "Voltar") || return 0
     case $c in
       1) network_interfaces ;;
@@ -3578,10 +3723,10 @@ network_menu() {
 storage_menu() {
   local c
   while :; do
-    c=$(show_menu "Storage / Discos" "Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
-      1 "[altera] Rescan SCSI/FC sem reboot" \
-      2 "[seguro] Listar discos e particoes" \
-      3 "[seguro] Multipath e HBAs (FC/SCSI)" \
+    c=$(select_action "Discos e barramento" "Consultas e reescaneamento. Cada opcao abre detalhes antes de executar." \
+      1 "Reescanear barramento SCSI/FC (modifica o sistema)" \
+      2 "Consultar discos e particoes (somente leitura)" \
+      3 "Consultar multipath e HBAs (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) rescan_storage ;;
@@ -3595,19 +3740,21 @@ storage_menu() {
 diag_menu() {
   local c
   while :; do
-    c=$(show_menu "Diagnostico / Logs" "Somente leitura - nenhuma alteracao no sistema" \
-      1 "[seguro] Resumo (disco, memoria, CPU, uptime)" \
-      2 "[seguro] Status de servicos essenciais" \
-      3 "[seguro] Rede (rotas, DNS e ARP)" \
-      4 "[seguro] Logs recentes (journal/messages)" \
-      5 "[seguro] Auditoria do script" \
+    c=$(select_action "Diagnostico e logs" "Somente leitura. Cada opcao abre detalhes e nao altera o sistema." \
+      1 "Resumo de CPU, memoria, disco e uptime (somente leitura)" \
+      2 "Status dos servicos essenciais (somente leitura)" \
+      3 "Rede: rotas, DNS e ARP (somente leitura)" \
+      4 "Logs recentes do sistema (somente leitura)" \
+      5 "Inventario de hardware (somente leitura)" \
+      6 "Auditoria do painel (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) diagnostics ;;
       2) service_status ;;
       3) network_details ;;
       4) recent_logs ;;
-      5) audit_menu ;;
+      5) hardware_info ;;
+      6) audit_menu ;;
       0) return 0 ;;
     esac
   done
@@ -3616,19 +3763,19 @@ diag_menu() {
 main_menu() {
   local c
   while :; do
-    c=$(show_menu "Menu principal" "Legenda: [seguro] leitura | [altera] escrita | [ATENCAO] risco/destrutivo" \
-      1 "[seguro] Dashboard operacional" \
-      2 "[altera] Armazenamento (LVM, discos, swap)" \
-      3 "[ATENCAO] Rede (pode interromper SSH)" \
-      4 "[altera] Usuarios e Grupos" \
-      5 "[altera] Servicos e Processos" \
-      6 "[altera] Pacotes e Atualizacoes" \
-      7 "[ATENCAO] Seguranca (firewall/SELinux/SSH)" \
-      8 "[ATENCAO] Sistema (hora, NTP, kernel, energia)" \
-      9 "[seguro] Diagnostico / Logs" \
-      10 "[ATENCAO] Batch / Frota (TMUX)" \
-      11 "[seguro] Ajuda rapida" \
-      0 "Sair") || return 0
+    c=$(show_menu "Painel do administrador" "Escolha uma area. As acoes internas abrem detalhes e informam o impacto antes de executar." \
+      1 "Visao geral do servidor (somente leitura)" \
+      2 "Armazenamento: LVM, discos e swap (abre menu)" \
+      3 "Rede e conectividade (abre menu)" \
+      4 "Usuarios e grupos (abre menu)" \
+      5 "Servicos e processos (abre menu)" \
+      6 "Pacotes e atualizacoes (abre menu)" \
+      7 "Seguranca: firewall, SELinux e SSH (abre menu)" \
+      8 "Sistema: hora, NTP, kernel e energia (abre menu)" \
+      9 "Diagnostico e logs (abre menu)" \
+      10 "Operacoes em lote (TMUX) (abre menu)" \
+      11 "Ajuda e compatibilidade (abre menu)" \
+      0 "Sair do painel") || return 0
     case $c in
       1) dashboard ;;
       2) storage_root_menu ;;
@@ -3640,7 +3787,7 @@ main_menu() {
       8) system_menu ;;
       9) diag_menu ;;
       10) batch_menu ;;
-      11) show_text "Ajuda rapida" "$(help_text)" ;;
+      11) help_menu ;;
       0) return 0 ;;
     esac
   done
