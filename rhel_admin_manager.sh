@@ -207,7 +207,7 @@ action_command_hint() {
     "Consultar interfaces"*) printf 'ip -o link show; ip -4 -o addr show; nmcli device status' ;;
     "Testar conectividade"*) printf 'ping -c 2; teste TCP via /dev/tcp' ;;
     "Consultar rotas"*) printf 'ip route; ip neigh; cat /etc/resolv.conf' ;;
-    "Consultar servicos essenciais"*) printf 'systemctl is-active/is-enabled (RHEL 7+) ou service/chkconfig (RHEL 6)' ;;
+    "Consultar servicos essenciais"*) printf 'systemctl --failed; systemctl is-active sshd NetworkManager crond rsyslog auditd firewalld chronyd; systemctl is-enabled sshd NetworkManager crond rsyslog auditd firewalld chronyd (RHEL 7+) ou service/chkconfig (RHEL 6)' ;;
     "Consultar status ("*) printf 'systemctl status <servico> ou service <servico> status' ;;
     "Consultar logs recentes"*) printf 'journalctl -u <servico> ou tail -n 120 /var/log/messages' ;;
     "Consultar servicos com falha"*) printf 'systemctl --failed (RHEL 7+) ou service --status-all (RHEL 6)' ;;
@@ -226,8 +226,8 @@ action_command_hint() {
     "Testar configuracao do SSH"*) printf 'sshd -t' ;;
     "Consultar data"*) printf 'date; timedatectl; hwclock' ;;
     "Consultar NTP"*) printf 'chronyc tracking ou ntpq -p' ;;
-    "Consultar sysctl"*) printf 'sysctl <chaves>; ls /etc/sysctl.d' ;;
-    "Consultar boot"*) printf 'uname -r; systemctl get-default; grubby --default-kernel' ;;
+    "Consultar sysctl"*) printf 'sysctl kernel.hostname kernel.pid_max fs.file-max vm.swappiness net.ipv4.ip_forward net.ipv4.tcp_syncookies; ls -l /etc/sysctl.conf /etc/sysctl.d/*.conf' ;;
+    "Consultar boot"*) printf 'uname -r; systemctl get-default; grubby --default-kernel; ls -1 /boot/vmlinuz-*' ;;
     "Consultar compatibilidade"*) printf 'Perfil interno do RHEL (sem comando de sistema)' ;;
     "Consultar uso do swap"*) printf 'cat /proc/swaps; free -m' ;;
     "Consultar discos"*) printf 'lsblk; fdisk -l' ;;
@@ -1047,7 +1047,10 @@ select_action() {
   esac
   show_text "Detalhes - $title" "$text" || return 1
   case $impact in
-    menu|leitura|interativo|info) : ;;
+    leitura)
+      confirm_exec "Executar consulta" "$hint" "Esta consulta nao altera o sistema. Nenhum comando de escrita sera executado." || return 1
+      ;;
+    menu|interativo|info) : ;;
     modifica)
       ui_yesno "Confirmar alteracao" "Esta acao vai modificar o sistema. Deseja abrir a configuracao?" || return 1
       ;;
@@ -2477,8 +2480,15 @@ load_inventory() {
 batch_test_ssh() {
   batch_local_ready || return 1
   load_inventory || return 1
-  local i target port out rc st text ok=0 fail=0
+  local i target port out rc st text ok=0 fail=0 preview
   local remote='if [ "$(id -u)" -ne 0 ]; then sudo -n true || exit 42; fi'
+  preview=""
+  for ((i = 0; i < ${#BATCH_TARGETS[@]}; i++)); do
+    preview+=$(cmd_line timeout 12 "${BATCH_SSH_PREFIX[@]}" -o BatchMode=yes -o ConnectTimeout=5 \
+      -o StrictHostKeyChecking=yes -p "${BATCH_PORTS[$i]}" "${BATCH_TARGETS[$i]}" "$remote")$'\n'
+  done
+  confirm_exec "Testar SSH e sudo" "$preview" \
+    "Somente leitura: testa conexao SSH e sudo -n em cada host do inventario." || return 1
   text="SSH local como: $BATCH_SSH_USER"$'\n'
   text+="Teste SSH BatchMode + sudo -n (host key deve estar em known_hosts)"$'\n\n'
   for ((i = 0; i < ${#BATCH_TARGETS[@]}; i++)); do
@@ -2931,6 +2941,13 @@ test_connectivity() {
       return 1
     fi
   fi
+  local cmds
+  cmds="ping -c 2 -W 2 $(q "$host")"
+  if [[ -n $port ]]; then
+    cmds+=$'\n'"timeout 5 bash -c $(q "echo > /dev/tcp/$host/$port")"
+  fi
+  confirm_exec "Executar teste de conectividade" "$cmds" \
+    "Somente leitura: ping e teste TCP, sem alteracao no sistema." || return 1
   pout=$(ping -c 2 -W 2 "$host" 2>&1)
   prc=$?
   out="Ping para $host: $([[ $prc -eq 0 ]] && printf 'OK' || printf 'FALHOU')"$'\n'"$pout"
@@ -3341,7 +3358,7 @@ help_text() {
     "  Requer root, whiptail/newt, ssh, tmux e sudo para o modulo batch." \
     "" \
     "LEGENDA DAS ACOES" \
-    "  Menus de area apenas navegam. Consultas abrem detalhes e leem; escritas pedem confirmacao." \
+    "  Menus de area apenas navegam. Consultas confirmam o comando de leitura; escritas pedem confirmacao." \
     "  As areas usam submenus por Consultar, Criar/Alterar e Remover quando aplicavel." \
     "  [detalhes]            toda acao abre uma tela com o que sera feito, comandos e riscos." \
     "  !                     destaque visual para acao de risco/destrutiva." \
@@ -3813,16 +3830,26 @@ manage_service() {
     disable "! Desabilitar no boot (destrutivo)") || return 1
   if [[ $action == status ]]; then
     if ((RHEL_VER >= 7)); then
-      show_text "Status - $svc" "$(timeout 10 systemctl status "$svc" --no-pager 2>&1)"
+      c=(timeout 10 systemctl status "$svc" --no-pager)
     else
-      show_text "Status - $svc" "$(timeout 10 service "$svc" status 2>&1)"
+      c=(timeout 10 service "$svc" status)
     fi
+    confirm_exec "Consultar status de $svc" "$(cmd_line "${c[@]}")" \
+      "Somente leitura: estado do servico, sem alteracao." || return 0
+    show_text "Status - $svc" "$("${c[@]}" 2>&1)"
     return 0
   fi
   if [[ $action == logs ]]; then
     if ((RHEL_VER >= 7)); then
-      show_text "Logs - $svc" "$(timeout 10 journalctl -u "$svc" -n 120 --no-pager 2>&1)"
+      c=(timeout 10 journalctl -u "$svc" -n 120 --no-pager)
+      confirm_exec "Consultar logs de $svc" "$(cmd_line "${c[@]}")" \
+        "Somente leitura: ultimas linhas de log." || return 0
+      show_text "Logs - $svc" "$("${c[@]}" 2>&1)"
     else
+      local logcmd
+      logcmd="timeout 10 grep -i $(q "$svc") /var/log/messages 2>/dev/null | tail -n 120"
+      confirm_exec "Consultar logs de $svc" "$logcmd" \
+        "Somente leitura: ultimas linhas de log." || return 0
       show_text "Logs - $svc" "$(timeout 10 grep -i "$svc" /var/log/messages 2>/dev/null | tail -n 120)"
     fi
     return 0
@@ -4095,6 +4122,7 @@ pkg_search() {
     ui_error "Busca invalida" "O termo deve iniciar com letra ou numero."
     return 1
   }
+  confirm_exec "Executar busca" "$(cmd_line timeout 30 "$pkg" search "$term")" "Somente leitura: consulta de pacotes." || return 1
   show_text "Busca - $term" "$(timeout 30 "$pkg" search "$term" 2>&1)"
 }
 
@@ -4106,6 +4134,7 @@ pkg_info() {
     ui_error "Nome invalido" "Informe um nome de pacote valido."
     return 1
   }
+  confirm_exec "Consultar pacote" "$(cmd_line timeout 30 "$pkg" info "$name")" "Somente leitura: consulta de pacotes." || return 1
   show_text "Pacote - $name" "$(timeout 30 "$pkg" info "$name" 2>&1)"
 }
 
