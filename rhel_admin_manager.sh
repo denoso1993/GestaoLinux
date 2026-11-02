@@ -13,7 +13,7 @@ BACKTITLE="RHEL Admin Manager"
 UI_H=22
 UI_W=78
 MENU_ROWS=12
-MENU_HINT="  Setas: navegar  |  Enter: selecionar  |  Esc: voltar"
+MENU_HINT="  Setas | Enter: selecionar | Esc: voltar | Ctrl+C: sair"
 STATUS_TS=0
 STATUS_LINE1=""
 STATUS_LINE2=""
@@ -42,6 +42,29 @@ BATCH_LAST_FILE=/var/log/rhel_admin_manager.last_batch
 die() {
   printf 'ERRO: %s\n' "$*" >&2
   exit 1
+}
+
+emergency_exit() {
+  local sig=${1:-INT} rc=130 user=${LOG_USER:-root}
+  case $sig in
+    TERM) rc=143 ;;
+    HUP) rc=129 ;;
+    QUIT) rc=131 ;;
+  esac
+  trap - INT TERM HUP QUIT EXIT
+  stty sane 2>/dev/null
+  tput cnorm 2>/dev/null
+  tput sgr0 2>/dev/null
+  tput rmcup 2>/dev/null
+  if [[ -n ${TMP_DIR:-} ]]; then
+    rm -rf "$TMP_DIR"
+  fi
+  if [[ -n ${LOG_FILE:-} && -w ${LOG_FILE:-} ]]; then
+    printf '%s | user=%s | status=EMERGENCIA | rc=%s | cmd=Ctrl+C/%s\n' \
+      "$(date '+%Y-%m-%d %H:%M:%S')" "$user" "$rc" "$sig" >>"$LOG_FILE"
+  fi
+  printf '\n[!] Saida de emergencia solicitada. Script encerrado.\n'
+  exit "$rc"
 }
 
 q() {
@@ -991,7 +1014,7 @@ select_action() {
       display+=("${raw[$i]}" "${raw[$((i + 1))]}  [detalhes]")
     fi
   done
-  MENU_HINT="  Setas: navegar  |  Enter: abrir detalhes e riscos  |  Esc: voltar"
+  MENU_HINT="  Setas | Enter: detalhes | Esc: voltar | Ctrl+C: sair"
   tag=$(show_menu "$title" "$prompt" "${display[@]}") || return 1
   for ((i = 0; i < ${#raw[@]}; i += 2)); do
     if [[ ${raw[$i]} == "$tag" ]]; then
@@ -3416,6 +3439,7 @@ help_text() {
     "" \
     "ATALHOS" \
     "  Seta/Tab navegam. Enter seleciona. Cancelar/Voltar retorna." \
+    "  Ctrl+C encerra o script imediatamente (saida de emergencia)." \
     "  Use uma sessao tmux no jump host para sobreviver a quedas de SSH."
 }
 
@@ -4904,6 +4928,10 @@ main() {
   command -v whiptail >/dev/null 2>&1 || die "whiptail nao encontrado. Instale o pacote newt."
   TMP_DIR=$(mktemp -d /tmp/rhel_admin_manager.XXXXXX) || die "Nao foi possivel criar diretorio temporario."
   trap 'rm -rf "$TMP_DIR"' EXIT
+  trap 'emergency_exit INT' INT
+  trap 'emergency_exit TERM' TERM
+  trap 'emergency_exit HUP' HUP
+  trap 'emergency_exit QUIT' QUIT
   SCRIPT_DIR=$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")" && pwd)
   BATCH_FILE="$SCRIPT_DIR/hosts.batch"
   BATCH_SSH_USER=${BATCH_SSH_USER:-${SUDO_USER:-$(id -un)}}
