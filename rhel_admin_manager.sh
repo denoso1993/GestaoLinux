@@ -223,6 +223,15 @@ show_menu() {
     "$UI_H" "$UI_W" "$MENU_ROWS" "$@" </dev/tty 3>&1 1>&2 2>&3
 }
 
+select_multiple() {
+  local title=$1 prompt=$2
+  shift 2
+  whiptail --backtitle "$BACKTITLE" --title "$title" \
+    --fb --notags --separate-output --ok-button "Selecionar" --cancel-button "Cancelar" \
+    --checklist "$prompt" "$UI_H" "$UI_W" "$MENU_ROWS" "$@" \
+    </dev/tty 3>&1 1>&2 2>&3
+}
+
 action_command_hint() {
   local item=$1
   case $item in
@@ -261,7 +270,7 @@ action_command_hint() {
     "Consultar logs"*) printf 'journalctl -n 120 ou tail -n 120 /var/log/messages' ;;
     "Consultar ultimas"*|"Consultar erros"*|"Consultar status do arquivo"*) printf 'tail/grep em /var/log/rhel_admin_manager.log' ;;
     "Consultar relatorio"*) printf 'Leitura do relatorio e logs do ultimo lote' ;;
-    "Ajuda rapida"*|"Compatibilidade da versao"*) printf 'Conteudo interno do painel (sem comando de sistema).' ;;
+    "Ajuda rapida"*|"Compatibilidade da versao"*|"Matriz de cobertura"*) printf 'Conteudo interno do painel (sem comando de sistema).' ;;
     *"(modifica"*) printf 'Os comandos exatos serao exibidos na tela de confirmacao, antes de executar.' ;;
     *"(destrutivo"*) printf 'Os comandos exatos serao exibidos; a execucao exige digitar SIM.' ;;
     *"(interativo"*) printf 'Abre uma sessao SSH interativa; nada e executado automaticamente.' ;;
@@ -825,6 +834,133 @@ lvm_overview() {
     timeout 10 df -hT 2>&1
   )
   show_text "LVM e File Systems" "$out"
+}
+
+select_pv_devices() {
+  need_bin pvs lvm2 || return 1
+  local -a items=()
+  local -A ispv=()
+  local name size type dev fs pv children
+  while read -r pv; do
+    [[ -n $pv ]] && ispv[$pv]=1
+  done < <(timeout 10 pvs --noheadings -o pv_name 2>/dev/null)
+  while read -r name size type; do
+    [[ $type == disk || $type == part || $type == mpath ]] || continue
+    dev=$name
+    [[ $dev == /* ]] || dev="/dev/$name"
+    [[ -b $dev ]] || continue
+    [[ -n ${ispv[$dev]:-} ]] && continue
+    device_mounted "$dev" && continue
+    in_swap "$dev" && continue
+    if [[ $type == disk || $type == mpath ]]; then
+      children=$(timeout 5 lsblk -rno NAME "$dev" 2>/dev/null | wc -l)
+      ((children > 1)) && continue
+    fi
+    fs=$(fs_type "$dev")
+    items+=("$dev" "$dev | $size | $type | ${fs:-livre}" OFF)
+  done < <(timeout 10 lsblk -rno NAME,SIZE,TYPE 2>/dev/null)
+  if ((${#items[@]} == 0)); then
+    ui_error "Criar PV" "Nenhum disco/particao elegivel encontrado. Discos com particoes, montados, swap ou ja usados como PV sao omitidos."
+    return 1
+  fi
+  select_multiple "Criar PV" "Selecione um ou mais discos/particoes para pvcreate:" "${items[@]}"
+}
+
+create_pv() {
+  need_bin pvcreate lvm2 || return 1
+  local selected dev fs params children
+  local -a devs cmd
+  selected=$(select_pv_devices) || return 1
+  mapfile -t devs < <(printf '%s\n' "$selected" | sed '/^[[:space:]]*$/d')
+  if ((${#devs[@]} == 0)); then
+    ui_error "Criar PV" "Nenhum dispositivo selecionado."
+    return 1
+  fi
+  params=""
+  for dev in "${devs[@]}"; do
+    [[ -b $dev ]] || {
+      ui_error "Dispositivo invalido" "$dev nao e um dispositivo de bloco."
+      return 1
+    }
+    if device_mounted "$dev" || in_swap "$dev"; then
+      ui_error "Dispositivo em uso" "$dev esta montado ou em swap."
+      return 1
+    fi
+    if timeout 5 pvs --noheadings -o pv_name 2>/dev/null | grep -Fxq "$dev"; then
+      ui_error "PV existente" "$dev ja e um Physical Volume."
+      return 1
+    fi
+    children=$(timeout 5 lsblk -rno NAME "$dev" 2>/dev/null | wc -l)
+    if ((children > 1)); then
+      ui_error "Disco com particoes" "$dev possui particoes/filhos; crie o PV na particao ou limpe o disco antes."
+      return 1
+    fi
+    fs=$(fs_type "$dev")
+    params+=$(printf '%s | FS/assinatura: %s' "$dev" "${fs:-nenhuma}")$'\n'
+  done
+  cmd=(pvcreate -y -f)
+  cmd+=("${devs[@]}")
+  confirm_strong "Criar PV" "$(cmd_line "${cmd[@]}")" \
+    "$params"$'\n'"pvcreate grava metadados LVM e pode tornar a assinatura atual ilegivel." || return 0
+  if ! run_cmd "${cmd[@]}"; then
+    ui_error "Falha ao criar PV" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  fi
+  show_text "PVs apos criacao" "$(timeout 10 pvs 2>&1)"
+}
+
+select_unused_pvs() {
+  need_bin pvs lvm2 || return 1
+  local -a items=()
+  local pv vg size
+  while IFS='|' read -r pv vg size; do
+    [[ -n $pv ]] || continue
+    [[ -z $vg ]] || continue
+    items+=("$pv" "$pv | $size | livre" OFF)
+  done < <(timeout 10 pvs --noheadings --separator '|' -o pv_name,vg_name,pv_size 2>/dev/null)
+  if ((${#items[@]} == 0)); then
+    ui_error "Criar VG" "Nenhum PV livre encontrado. Crie um PV primeiro."
+    return 1
+  fi
+  select_multiple "Criar VG" "Selecione os PVs livres para o novo VG:" "${items[@]}"
+}
+
+create_vg() {
+  need_bin vgcreate lvm2 || return 1
+  local selected vg pe pv params
+  local -a pvs cmd
+  selected=$(select_unused_pvs) || return 1
+  mapfile -t pvs < <(printf '%s\n' "$selected" | sed '/^[[:space:]]*$/d')
+  if ((${#pvs[@]} == 0)); then
+    ui_error "Criar VG" "Nenhum PV selecionado."
+    return 1
+  fi
+  while :; do
+    vg=$(ask "Criar VG" "Nome do novo Volume Group:") || return 1
+    valid_lvm_name "$vg" || {
+      ui_error "Nome invalido" "Use letras, numeros, ponto, hifen, underline ou mais; nao inicie com hifen."
+      continue
+    }
+    if timeout 5 vgs "$vg" >/dev/null 2>&1; then
+      ui_error "VG existente" "O VG $vg ja existe."
+      continue
+    fi
+    break
+  done
+  while :; do
+    pe=$(ask "Criar VG" "PE size (ex.: 4M):" "4M") || return 1
+    pe=${pe^^}
+    [[ $pe =~ ^[1-9][0-9]*[KMG]$ ]] && break
+    ui_error "PE invalido" "Use numero inteiro seguido de K, M ou G (ex.: 4M)."
+  done
+  cmd=(vgcreate -s "$pe" "$vg" "${pvs[@]}")
+  params="VG: $vg | PE size: $pe"$'\n'"PVs: ${pvs[*]}"
+  confirm_exec "Criar VG" "$(cmd_line "${cmd[@]}")" "$params" || return 0
+  if ! run_cmd "${cmd[@]}"; then
+    ui_error "Falha ao criar VG" "A operacao foi interrompida." "$RUN_OUT"
+    return 1
+  fi
+  show_text "VGs apos criacao" "$(timeout 10 vgs 2>&1)"
 }
 
 create_lv() {
@@ -2329,18 +2465,22 @@ storage_change_menu() {
   local c
   while :; do
     c=$(select_action "Criar, ampliar ou montar" "Cada opcao pede parametros e mostra o comando final antes de executar." \
-      1 "Criar volume logico (modifica o sistema)" \
-      2 "Ampliar volume logico e filesystem (modifica o sistema)" \
-      3 "Criar filesystem em volume logico (modifica o sistema)" \
-      4 "Montar filesystem e gravar no fstab (modifica o sistema)" \
-      5 "Ativar dispositivo swap (modifica o sistema)" \
+      1 "! Criar PV em disco (destrutivo)" \
+      2 "Criar VG com PVs (modifica o sistema)" \
+      3 "Criar volume logico (modifica o sistema)" \
+      4 "Ampliar volume logico e filesystem (modifica o sistema)" \
+      5 "Criar filesystem em volume logico (modifica o sistema)" \
+      6 "Montar filesystem e gravar no fstab (modifica o sistema)" \
+      7 "Ativar dispositivo swap (modifica o sistema)" \
       0 "Voltar") || return 0
     case $c in
-      1) create_lv ;;
-      2) extend_lv ;;
-      3) create_fs_lv ;;
-      4) mount_fs ;;
-      5) swap_toggle on ;;
+      1) create_pv ;;
+      2) create_vg ;;
+      3) create_lv ;;
+      4) extend_lv ;;
+      5) create_fs_lv ;;
+      6) mount_fs ;;
+      7) swap_toggle on ;;
       0) return 0 ;;
     esac
   done
@@ -2611,8 +2751,8 @@ help_text() {
     "  Cada comando e registrado em $LOG_FILE." \
     "" \
     "LVM / FILE SYSTEMS" \
-    "  Permite visualizar, criar LV, estender LV+FS, formatar, montar com UUID," \
-    "  desmontar/remover fstab e excluir LV. Nao faz shrink nem criacao de PV/VG." \
+    "  Permite criar PV, criar VG, criar LV, estender LV+FS, formatar, montar com UUID," \
+    "  desmontar/remover fstab e excluir LV. Sem modulo dedicado para shrink/remocao de PV/VG." \
     "" \
     "REDE" \
     "  RHEL 6 usa ifcfg + service network. RHEL 7+ usa nmcli/NetworkManager." \
@@ -2633,11 +2773,15 @@ help_text() {
     "  SELinux (modo/booleanos/AVC) e auditoria SSH sem editar sshd_config." \
     "  Data/hora, timezone, NTP, sysctl, boot e reboot/shutdown." \
     "" \
-    "LIMITES DELIBERADOS" \
-    "  Nao faz shrink, thin/snapshot, criacao/remocao de PV/VG ou particionamento." \
-    "  Nao edita sshd_config, bond/VLAN ou distribui chaves automaticamente." \
-    "  Nao cobre NFS, edicao de cron/timers, tuned/kdump, RAID ou registro de subscription." \
-    "  Essas operacoes exigem procedimento dedicado e console/IPMI." \
+    "AVANCADO" \
+    "  Comando root assistido executa qualquer comando como root com preview e confirmacao SIM." \
+    "  Use para operacoes sem modulo dedicado; nao ha validacao semantica de dominio." \
+    "" \
+    "LIMITES / FALLBACK" \
+    "  Modulos dedicados cobrem as operacoes catalogadas; o restante via comando root assistido." \
+    "  Shrink, thin/snapshot, RAID, cluster e acoes de aplicacao exigem procedimento dedicado." \
+    "  Sem modulo dedicado: sshd_config, bond/VLAN, NFS, cron/timers, tuned/kdump e subscription." \
+    "  Use o comando root assistido para essas operacoes, com confirmacao SIM." \
     "" \
     "PRODUCAO" \
     "  ifcfg, fstab e hostname geram backup antes da alteracao." \
@@ -4000,16 +4144,43 @@ system_power_menu() {
   done
 }
 
+coverage_text() {
+  printf '%s\n' \
+    "RHEL ADMIN MANAGER - MATRIZ DE COBERTURA" \
+    "" \
+    "MODULOS DEDICADOS" \
+    "- Storage: criar PV, criar VG, criar LV, ampliar LV/FS, formatar, montar/desmontar fstab," \
+    "  excluir LV, swap, rescan SCSI/FC, multipath/HBAs e uso de filesystems." \
+    "- Rede: interfaces, IPv4 LAN, heartbeat, DHCP, hostname/hosts, testes, rotas/DNS/ARP." \
+    "- Usuarios: UID/GID/grupos, criacao, senha, troca forcada, grupo, lock e remocao." \
+    "- Servicos: status, falhas, start/stop/restart/reload, enable/disable, logs, processos, cron/timers." \
+    "- Pacotes: repositorios, atualizacoes, security updates, instalar/remover, historico e subscription." \
+    "- Seguranca: firewall, SELinux (modo/booleanos/AVC) e auditoria/teste SSH." \
+    "- Sistema: data/hora/timezone, NTP, sysctl, boot/kernel, reboot/shutdown/cancelamento." \
+    "- Diagnostico: resumo, servicos, rede, logs, hardware e auditoria do painel." \
+    "- Lote/TMUX: inventario, teste SSH/sudo, patch, security, reboot, diagnostico, comando e relatorio." \
+    "" \
+    "FALLBACK PARA QUALQUER OPERACAO ROOT" \
+    "- Comando root assistido: executa qualquer comando como root, com comando exato, SIM e auditoria." \
+    "- Use quando nao houver modulo dedicado; nao ha validacao semantica de dominio." \
+    "" \
+    "NAO VALIDADO SEMANTICAMENTE PELO PAINEL" \
+    "- Aplicacoes (Oracle, SAP, middleware), cluster, RAID, tuned/kdump, NFS e particionamento." \
+    "- Essas operacoes podem ser executadas pelo comando root assistido, mas exigem conhecimento do procedimento."
+}
+
 help_menu() {
   local c
   while :; do
-    c=$(select_action "Ajuda e compatibilidade" "Consulte instrucoes e diferencas entre versoes." \
+    c=$(select_action "Ajuda e compatibilidade" "Consulte instrucoes, compatibilidade e cobertura." \
       1 "Ajuda rapida (somente leitura)" \
       2 "Compatibilidade da versao (somente leitura)" \
+      3 "Matriz de cobertura (somente leitura)" \
       0 "Voltar") || return 0
     case $c in
       1) show_text "Ajuda rapida" "$(help_text)" ;;
       2) show_text "Compatibilidade $RHEL_LABEL" "$(version_profile_text)" ;;
+      3) show_text "Matriz de cobertura" "$(coverage_text)" ;;
       0) return 0 ;;
     esac
   done
@@ -4106,6 +4277,26 @@ diag_menu() {
   done
 }
 
+root_command() {
+  local cmd
+  cmd=$(ask "Comando root assistido" "Digite o comando shell exato (executado como root):") || return 1
+  [[ -n $cmd ]] || {
+    ui_error "Comando vazio" "Nenhum comando informado."
+    return 1
+  }
+  confirm_strong "Comando root assistido" "$cmd" \
+    "Execucao direta como root, sem validacao de dominio."$'\n'"Revise o comando e o impacto. Comandos interativos devem ser executados manualmente." || return 0
+  if run_shell "$cmd"; then
+    if [[ -n $RUN_OUT ]]; then
+      show_text "Saida do comando" "$RUN_OUT"
+    else
+      ui_ok "Comando executado" "Sem saida."
+    fi
+  else
+    ui_error "Falha no comando" "O comando retornou erro." "$RUN_OUT"
+  fi
+}
+
 main_menu() {
   local c
   while :; do
@@ -4120,7 +4311,8 @@ main_menu() {
       8 "Sistema: hora, NTP, kernel e energia (abre menu)" \
       9 "Diagnostico e logs (abre menu)" \
       10 "Operacoes em lote (TMUX) (abre menu)" \
-      11 "Ajuda e compatibilidade (abre menu)" \
+      11 "! Executar comando root assistido (destrutivo)" \
+      12 "Ajuda e compatibilidade (abre menu)" \
       0 "Sair do painel") || return 0
     case $c in
       1) dashboard ;;
@@ -4133,7 +4325,8 @@ main_menu() {
       8) system_menu ;;
       9) diag_menu ;;
       10) batch_menu ;;
-      11) help_menu ;;
+      11) root_command ;;
+      12) help_menu ;;
       0) return 0 ;;
     esac
   done
