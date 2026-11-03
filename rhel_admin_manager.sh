@@ -70,8 +70,8 @@ emergency_exit() {
 flush_input() {
   local junk
   { : </dev/tty; } 2>/dev/null || return 0
-  while IFS= read -r -t 0.02 -s -n 1 junk </dev/tty; do
-    : "$junk"
+  while IFS= read -r -t 0 -s -n 1 junk </dev/tty; do
+    [[ -n $junk ]] || break
   done
 }
 
