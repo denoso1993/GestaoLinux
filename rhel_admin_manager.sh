@@ -13,7 +13,7 @@ BACKTITLE="RHEL Admin Manager"
 UI_H=22
 UI_W=78
 MENU_ROWS=12
-MENU_HINT="  Setas | Enter: selecionar | Esc: voltar | Ctrl+C: sair"
+MENU_HINT="  Setas | Enter: selecionar | Esc: voltar/sair"
 STATUS_TS=0
 STATUS_LINE1=""
 STATUS_LINE2=""
@@ -68,6 +68,7 @@ emergency_exit() {
 }
 
 flush_input() {
+  sleep 0.12
   local junk
   { : </dev/tty; } 2>/dev/null || return 0
   while IFS= read -r -t 0 -s -n 1 junk </dev/tty; do
@@ -149,17 +150,6 @@ set_ui() {
 
 init_theme() {
   export NEWT_COLORS='root=white,black;roottext=white,black;window=white,black;border=white,black;shadow=black,black;title=yellow,black;button=black,lightgray;actbutton=black,cyan;compactbutton=white,black;textbox=white,black;acttextbox=white,black;entry=white,black;label=white,black;listbox=white,black;actlistbox=black,cyan;sellistbox=white,black;actsellistbox=black,cyan;checkbox=white,black;actcheckbox=black,cyan;helpline=white,black;emptyscale=,black;fullscale=,cyan;disentry=gray,black'
-}
-
-whiptail() {
-  local rc pid
-  command whiptail "$@" &
-  pid=$!
-  trap 'kill -KILL "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; emergency_exit INT' INT
-  wait "$pid"
-  rc=$?
-  trap 'emergency_exit INT' INT
-  return "$rc"
 }
 
 ui_footer() {
@@ -248,13 +238,28 @@ show_menu() {
 select_multiple() {
   local title=$1 prompt=$2
   shift 2
-  whiptail --backtitle "$BACKTITLE" --title "$title" \
-    --fb --notags --separate-output --ok-button "Selecionar" --cancel-button "Cancelar" \
-    --checklist "$prompt"$'\n\n'"  ESPACO marca/desmarca | Enter confirma | Tab alterna botoes" "$UI_H" "$UI_W" "$MENU_ROWS" "$@" \
-    </dev/tty 3>&1 1>&2 2>&3
-  local rc=$?
-  flush_input
-  return "$rc"
+  local -a all=("$@") menu=() selected=()
+  local i tag desc choice skip s
+  while :; do
+    menu=()
+    for ((i = 0; i < ${#all[@]}; i += 3)); do
+      tag=${all[$i]}
+      desc=${all[$((i + 1))]}
+      skip=0
+      for s in "${selected[@]}"; do
+        [[ $s == "$tag" ]] && { skip=1; break; }
+      done
+      ((skip)) && continue
+      menu+=("$tag" "$desc")
+    done
+    ((${#menu[@]} == 0)) && break
+    choice=$(show_menu "$title" "$prompt"$'\n'"  Enter seleciona um item; depois confirme se deseja adicionar outro." "${menu[@]}") || return 1
+    selected+=("$choice")
+    ((${#menu[@]} <= 2)) && break
+    ui_yesno "Adicionar outro?" "Deseja selecionar outro item para $title?" || break
+  done
+  ((${#selected[@]})) || return 1
+  printf '%s\n' "${selected[@]}"
 }
 
 action_command_hint() {
@@ -344,7 +349,7 @@ ask() {
 ui_msg() {
   local h=14
   ((h > UI_H)) && h=$UI_H
-  whiptail --backtitle "$BACKTITLE" --title "$1" --fb --ok-button "Entendi" --msgbox "$2" "$h" "$UI_W"
+  whiptail --backtitle "$BACKTITLE" --title "$1" --fb --ok-button "Entendi" --msgbox "$2" "$h" "$UI_W" </dev/tty >/dev/tty 2>&1
   local rc=$?
   flush_input
   return "$rc"
@@ -358,7 +363,7 @@ ui_error() {
   fi
   text+=$'\n\n== AUDITORIA ==\n'"$LOG_FILE"
   ((h > UI_H)) && h=$UI_H
-  whiptail --backtitle "$BACKTITLE" --title "ERRO - $title" --fb --ok-button "Entendi" --msgbox "$text" "$h" "$UI_W"
+  whiptail --backtitle "$BACKTITLE" --title "ERRO - $title" --fb --ok-button "Entendi" --msgbox "$text" "$h" "$UI_W" </dev/tty >/dev/tty 2>&1
   local rc=$?
   flush_input
   return "$rc"
@@ -367,7 +372,7 @@ ui_error() {
 ui_ok() {
   local h=14
   ((h > UI_H)) && h=$UI_H
-  whiptail --backtitle "$BACKTITLE" --title "$1" --fb --ok-button "OK" --msgbox "$2"$'\n\n== AUDITORIA ==\n'"$LOG_FILE" "$h" "$UI_W"
+  whiptail --backtitle "$BACKTITLE" --title "$1" --fb --ok-button "OK" --msgbox "$2"$'\n\n== AUDITORIA ==\n'"$LOG_FILE" "$h" "$UI_W" </dev/tty >/dev/tty 2>&1
   local rc=$?
   flush_input
   return "$rc"
@@ -2844,8 +2849,9 @@ help_text() {
     "  Relatorios e logs: /var/log/rhel_admin_manager.batch.*" \
     "" \
     "ATALHOS" \
-    "  Seta/Tab navegam. Enter seleciona. Cancelar/Voltar retorna." \
-    "  Ctrl+C encerra o script imediatamente (saida de emergencia)." \
+    "  Seta/Tab navegam. Enter seleciona. Esc/Cancelar/Voltar retorna." \
+    "  Na tela principal, Esc ou a opcao Sair encerram o script." \
+    "  Ctrl+C nao e capturado dentro das janelas whiptail (modo raw)." \
     "  Use uma sessao tmux no jump host para sobreviver a quedas de SSH."
 }
 
