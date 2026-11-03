@@ -67,6 +67,14 @@ emergency_exit() {
   exit "$rc"
 }
 
+flush_input() {
+  local junk
+  { : </dev/tty; } 2>/dev/null || return 0
+  while IFS= read -r -t 0.02 -s -n 1 junk </dev/tty; do
+    : "$junk"
+  done
+}
+
 q() {
   printf '%q' "$1"
 }
@@ -221,6 +229,9 @@ show_menu() {
     --fb --notags --ok-button "Selecionar" --cancel-button "Voltar" \
     --menu "$prompt"$'\n'"$(ui_rule)"$'\n'"$(status_block)"$'\n'"$MENU_HINT"$'\n'"  $(ui_footer)" \
     "$UI_H" "$UI_W" "$MENU_ROWS" "$@" </dev/tty 3>&1 1>&2 2>&3
+  local rc=$?
+  flush_input
+  return "$rc"
 }
 
 select_multiple() {
@@ -228,8 +239,11 @@ select_multiple() {
   shift 2
   whiptail --backtitle "$BACKTITLE" --title "$title" \
     --fb --notags --separate-output --ok-button "Selecionar" --cancel-button "Cancelar" \
-    --checklist "$prompt" "$UI_H" "$UI_W" "$MENU_ROWS" "$@" \
+    --checklist "$prompt"$'\n\n'"  ESPACO marca/desmarca | Enter confirma | Tab alterna botoes" "$UI_H" "$UI_W" "$MENU_ROWS" "$@" \
     </dev/tty 3>&1 1>&2 2>&3
+  local rc=$?
+  flush_input
+  return "$rc"
 }
 
 action_command_hint() {
@@ -306,10 +320,12 @@ select_action() {
 }
 
 ask() {
-  local title=$1 prompt=$2 default=${3:-} ans
+  local title=$1 prompt=$2 default=${3:-} ans rc
   ans=$(whiptail --backtitle "$BACKTITLE" --title "$title" --fb \
     --ok-button "Confirmar" --cancel-button "Cancelar" --inputbox \
-    "$prompt" 12 "$UI_W" "$default" </dev/tty 3>&1 1>&2 2>&3) || return 1
+    "$prompt" 12 "$UI_W" "$default" </dev/tty 3>&1 1>&2 2>&3); rc=$?
+  flush_input
+  ((rc == 0)) || return 1
   ans=$(printf '%s' "$ans" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   printf '%s' "$ans"
 }
@@ -318,6 +334,9 @@ ui_msg() {
   local h=14
   ((h > UI_H)) && h=$UI_H
   whiptail --backtitle "$BACKTITLE" --title "$1" --fb --ok-button "Entendi" --msgbox "$2" "$h" "$UI_W"
+  local rc=$?
+  flush_input
+  return "$rc"
 }
 
 ui_error() {
@@ -329,12 +348,18 @@ ui_error() {
   text+=$'\n\n== AUDITORIA ==\n'"$LOG_FILE"
   ((h > UI_H)) && h=$UI_H
   whiptail --backtitle "$BACKTITLE" --title "ERRO - $title" --fb --ok-button "Entendi" --msgbox "$text" "$h" "$UI_W"
+  local rc=$?
+  flush_input
+  return "$rc"
 }
 
 ui_ok() {
   local h=14
   ((h > UI_H)) && h=$UI_H
   whiptail --backtitle "$BACKTITLE" --title "$1" --fb --ok-button "OK" --msgbox "$2"$'\n\n== AUDITORIA ==\n'"$LOG_FILE" "$h" "$UI_W"
+  local rc=$?
+  flush_input
+  return "$rc"
 }
 
 confirm_exec() {
@@ -347,14 +372,16 @@ confirm_exec() {
 }
 
 confirm_strong() {
-  local title=$1 cmds=$2 extra=${3:-} ans text
+  local title=$1 cmds=$2 extra=${3:-} ans text rc
   text=$'== ACAO ==\n'"$title"$'\n\n== OPERACAO DESTRUTIVA ==\n\n'"$cmds"
   [[ -n $extra ]] && text+=$'\n\n== PARAMETROS / IMPACTO ==\n'"$extra"
   text+=$'\n\n== CONFIRMACAO ==\n'"Digite SIM na proxima tela para continuar."
   show_text "CONFIRMAR - $title" "$text" || return 1
   ans=$(whiptail --backtitle "$BACKTITLE" --title "CONFIRMAR - $title" --fb \
     --ok-button "Confirmar" --cancel-button "Cancelar" --inputbox \
-    "Digite SIM para confirmar:" 10 "$UI_W" "" </dev/tty 3>&1 1>&2 2>&3) || return 1
+    "Digite SIM para confirmar:" 10 "$UI_W" "" </dev/tty 3>&1 1>&2 2>&3); rc=$?
+  flush_input
+  ((rc == 0)) || return 1
   [[ $ans == SIM ]]
 }
 
@@ -363,16 +390,21 @@ ui_yesno() {
   ((h > UI_H)) && h=$UI_H
   whiptail --backtitle "$BACKTITLE" --title "$1" --fb --defaultno \
     --yes-button "Confirmar" --no-button "Cancelar" --yesno "$2" "$h" "$UI_W" </dev/tty >/dev/tty 2>&1
+  local rc=$?
+  flush_input
+  return "$rc"
 }
 
 confirm_batch() {
-  local title=$1 text=$2 strong=$3 ans
+  local title=$1 text=$2 strong=$3 ans rc
   show_text "CONFIRMAR BATCH - $title" \
     $'== ACAO ==\n'"$title"$'\n\n'"$text"$'\n\n== MODO ==\n'"$([[ $strong == 1 ]] && printf 'DESTRUTIVO: sera exigido SIM.' || printf 'Paralelo via TMUX.')"$'\n'"Revise os comandos acima antes de confirmar." || return 1
   if ((strong)); then
     ans=$(whiptail --backtitle "$BACKTITLE" --title "CONFIRMAR - $title" --fb \
       --ok-button "Confirmar" --cancel-button "Cancelar" --inputbox \
-      "Digite SIM para confirmar:" 10 "$UI_W" "" </dev/tty 3>&1 1>&2 2>&3) || return 1
+      "Digite SIM para confirmar:" 10 "$UI_W" "" </dev/tty 3>&1 1>&2 2>&3); rc=$?
+    flush_input
+    ((rc == 0)) || return 1
     [[ $ans == SIM ]]
   else
     ui_yesno "Executar batch" "Executar os comandos exibidos na sessao $BATCH_SESSION?"
@@ -386,6 +418,7 @@ show_text() {
   whiptail --backtitle "$BACKTITLE" --title "$title" --fb --ok-button "Fechar" \
     --scrolltext --textbox "$f" "$UI_H" "$UI_W" </dev/tty >/dev/tty 2>&1
   local rc=$?
+  flush_input
   rm -f "$f"
   return "$rc"
 }
@@ -870,12 +903,13 @@ create_pv() {
   need_bin pvcreate lvm2 || return 1
   local selected dev fs params children
   local -a devs cmd
-  selected=$(select_pv_devices) || return 1
-  mapfile -t devs < <(printf '%s\n' "$selected" | sed '/^[[:space:]]*$/d')
-  if ((${#devs[@]} == 0)); then
-    ui_error "Criar PV" "Nenhum dispositivo selecionado."
-    return 1
-  fi
+  while :; do
+    selected=$(select_pv_devices) || return 1
+    mapfile -t devs < <(printf '%s\n' "$selected" | sed '/^[[:space:]]*$/d')
+    ((${#devs[@]})) && break
+    ui_error "Criar PV" "Nenhum dispositivo selecionado." \
+      "Use ESPACO para marcar um ou mais itens e Enter para confirmar."
+  done
   params=""
   for dev in "${devs[@]}"; do
     [[ -b $dev ]] || {
@@ -929,12 +963,13 @@ create_vg() {
   need_bin vgcreate lvm2 || return 1
   local selected vg pe pv params
   local -a pvs cmd
-  selected=$(select_unused_pvs) || return 1
-  mapfile -t pvs < <(printf '%s\n' "$selected" | sed '/^[[:space:]]*$/d')
-  if ((${#pvs[@]} == 0)); then
-    ui_error "Criar VG" "Nenhum PV selecionado."
-    return 1
-  fi
+  while :; do
+    selected=$(select_unused_pvs) || return 1
+    mapfile -t pvs < <(printf '%s\n' "$selected" | sed '/^[[:space:]]*$/d')
+    ((${#pvs[@]})) && break
+    ui_error "Criar VG" "Nenhum PV selecionado." \
+      "Use ESPACO para marcar um ou mais PVs e Enter para confirmar."
+  done
   while :; do
     vg=$(ask "Criar VG" "Nome do novo Volume Group:") || return 1
     valid_lvm_name "$vg" || {
