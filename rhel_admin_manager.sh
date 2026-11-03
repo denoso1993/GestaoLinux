@@ -38,6 +38,8 @@ BATCH_DEFAULT_USER=${BATCH_DEFAULT_USER:-}
 BATCH_SSH_USER=${BATCH_SSH_USER:-}
 BATCH_SSH_PREFIX=()
 BATCH_LAST_FILE=/var/log/rhel_admin_manager.last_batch
+CAPTURE_MODE=0
+CAPTURE_CMDS=""
 
 die() {
   printf 'ERRO: %s\n' "$*" >&2
@@ -104,6 +106,11 @@ log_event() {
 
 run_cmd() {
   local out rc preview
+  if ((CAPTURE_MODE)); then
+    CAPTURE_CMDS+=$(cmd_line "$@")$'\n'
+    RUN_OUT=""
+    return 0
+  fi
   preview=$(printf '%q ' "$@")
   out=$("$@" 2>&1)
   rc=$?
@@ -118,6 +125,11 @@ run_cmd() {
 
 run_shell() {
   local script=$1 out rc f
+  if ((CAPTURE_MODE)); then
+    CAPTURE_CMDS+=$'( set -e\n'"$script"$'\n)\n'
+    RUN_OUT=""
+    return 0
+  fi
   f=$(mktemp "$TMP_DIR/cmd.XXXXXX") || return 1
   printf 'set -e\n%s\n' "$script" >"$f"
   out=$(bash "$f" 2>&1)
@@ -347,6 +359,7 @@ ask() {
 }
 
 ui_msg() {
+  ((CAPTURE_MODE)) && return 0
   local h=14
   ((h > UI_H)) && h=$UI_H
   whiptail --backtitle "$BACKTITLE" --title "$1" --fb --ok-button "Entendi" --msgbox "$2" "$h" "$UI_W" </dev/tty >/dev/tty 2>&1
@@ -370,6 +383,7 @@ ui_error() {
 }
 
 ui_ok() {
+  ((CAPTURE_MODE)) && return 0
   local h=14
   ((h > UI_H)) && h=$UI_H
   whiptail --backtitle "$BACKTITLE" --title "$1" --fb --ok-button "OK" --msgbox "$2"$'\n\n== AUDITORIA ==\n'"$LOG_FILE" "$h" "$UI_W" </dev/tty >/dev/tty 2>&1
@@ -379,6 +393,7 @@ ui_ok() {
 }
 
 confirm_exec() {
+  ((CAPTURE_MODE)) && return 0
   local title=$1 cmds=$2 extra=${3:-} text
   text=$'== ACAO ==\n'"$title"$'\n\n== COMANDOS EXATOS ==\n\n'"$cmds"
   [[ -n $extra ]] && text+=$'\n\n== PARAMETROS / IMPACTO ==\n'"$extra"
@@ -388,6 +403,7 @@ confirm_exec() {
 }
 
 confirm_strong() {
+  ((CAPTURE_MODE)) && return 0
   local title=$1 cmds=$2 extra=${3:-} ans text rc
   text=$'== ACAO ==\n'"$title"$'\n\n== OPERACAO DESTRUTIVA ==\n\n'"$cmds"
   [[ -n $extra ]] && text+=$'\n\n== PARAMETROS / IMPACTO ==\n'"$extra"
@@ -412,6 +428,7 @@ ui_yesno() {
 }
 
 confirm_batch() {
+  ((CAPTURE_MODE)) && return 0
   local title=$1 text=$2 strong=$3 ans rc
   show_text "CONFIRMAR BATCH - $title" \
     $'== ACAO ==\n'"$title"$'\n\n'"$text"$'\n\n== MODO ==\n'"$([[ $strong == 1 ]] && printf 'DESTRUTIVO: sera exigido SIM.' || printf 'Paralelo via TMUX.')"$'\n'"Revise os comandos acima antes de confirmar." || return 1
@@ -428,6 +445,7 @@ confirm_batch() {
 }
 
 show_text() {
+  ((CAPTURE_MODE)) && return 0
   local title=$1 text=$2 f
   f=$(mktemp "$TMP_DIR/text.XXXXXX") || return 1
   printf '%s\n' "$text" >"$f"
@@ -1459,6 +1477,7 @@ network_mode_label() {
 }
 
 network_result() {
+  ((CAPTURE_MODE)) && return 0
   local out
   sleep 2
   if [[ $NET_MODE == heartbeat ]]; then
@@ -1659,6 +1678,7 @@ network_details() {
 }
 
 dhcp_result() {
+  ((CAPTURE_MODE)) && return 0
   local iface=$1 ip
   sleep 2
   ip=$(ip -4 -o addr show dev "$iface" 2>/dev/null | awk 'NR==1 {print $4}')
@@ -2205,6 +2225,93 @@ batch_report() {
   show_text "Relatorio batch" "$text"
 }
 
+batch_capture_action() {
+  local title=$1 need_root=$2 strong=$3 fn=$4
+  shift 4
+  CAPTURE_MODE=1
+  CAPTURE_CMDS=""
+  local rc
+  "$fn" "$@"
+  rc=$?
+  CAPTURE_MODE=0
+  ((rc == 0)) || return 1
+  if [[ -z $CAPTURE_CMDS ]]; then
+    ui_error "Batch" "A acao '$title' nao gerou comandos remotos."
+    return 1
+  fi
+  CAPTURE_CMDS=$'set -e\n'"$CAPTURE_CMDS"
+  batch_dispatch "$title" "$CAPTURE_CMDS" "$need_root" "$strong" 0 \
+    "Parametros e validacao feitos no host local. Use nomes/valores identicos nos remotos."$'\n'"Comandos capturados da mesma rotina do painel."
+}
+
+batch_readonly_dispatch() {
+  local title=$1 remote=$2 need_root=${3:-0} notes=${4:-}
+  batch_dispatch "$title" "$remote" "$need_root" 0 0 "$notes"
+}
+
+batch_readonly_cmd() {
+  case $1 in
+    lvm) printf '%s' 'pvs; echo; vgs; echo; lvs; echo; df -hT' ;;
+    disks) printf '%s' 'lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT; echo; blkid; echo; df -hT' ;;
+    storage_health) printf '%s' 'multipath -ll 2>/dev/null; echo; lsblk -S 2>/dev/null; echo; cat /sys/class/fc_host/host*/port_name 2>/dev/null' ;;
+    fsusage) printf '%s' 'df -hT; echo; df -i' ;;
+    swap) printf '%s' 'swapon --show 2>/dev/null; echo; free -m; echo; cat /proc/swaps' ;;
+    netif) printf '%s' 'ip -br addr 2>/dev/null || ifconfig -a; echo; ip route 2>/dev/null || route -n; echo; cat /etc/resolv.conf' ;;
+    netdetails) printf '%s' 'ip route 2>/dev/null || route -n; echo; cat /etc/resolv.conf; echo; ip neigh 2>/dev/null || arp -an' ;;
+    users) printf '%s' 'getent passwd; echo; getent group' ;;
+    groups) printf '%s' 'getent group' ;;
+    logins) printf '%s' 'last -n 20; echo; who' ;;
+    services) printf '%s' 'if command -v systemctl >/dev/null 2>&1; then systemctl --failed --no-pager; echo; for s in sshd NetworkManager crond rsyslog auditd firewalld chronyd; do printf "%-22s %-10s %s\n" "$s" "$(systemctl is-active "$s" 2>/dev/null)" "$(systemctl is-enabled "$s" 2>/dev/null)"; done; else service --status-all; fi' ;;
+    failed) printf '%s' 'systemctl --failed --no-pager 2>/dev/null || service --status-all' ;;
+    top) printf '%s' 'ps -eo pid,user,pcpu,pmem,comm --sort=-pcpu | head -n 20' ;;
+    cron) printf '%s' 'crontab -l 2>/dev/null; echo; systemctl list-timers --all --no-pager 2>/dev/null' ;;
+    repos) printf '%s' 'if command -v dnf >/dev/null 2>&1; then dnf repolist -v; else yum repolist -v; fi' ;;
+    updates) printf '%s' 'if command -v dnf >/dev/null 2>&1; then dnf check-update || true; else yum check-update || true; fi' ;;
+    pkghistory) printf '%s' 'if command -v dnf >/dev/null 2>&1; then dnf history; else yum history; fi' ;;
+    subscription) printf '%s' 'subscription-manager status 2>&1; echo; subscription-manager identity 2>&1; echo; subscription-manager repos --list-enabled 2>&1' ;;
+    firewall) printf '%s' 'if command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --state; echo; firewall-cmd --get-active-zones; echo; firewall-cmd --list-all; else iptables -L -n -v; fi' ;;
+    selinux) printf '%s' 'getenforce 2>/dev/null; echo; sestatus 2>/dev/null' ;;
+    denials) printf '%s' 'ausearch -m avc -ts recent 2>/dev/null || echo "ausearch ausente/sem AVC recente"' ;;
+    sshaudit) printf '%s' 'sshd -T 2>/dev/null | grep -E "^(permitrootlogin|passwordauthentication|pubkeyauthentication|permitemptypasswords|maxauthtries|x11forwarding|allowtcpforwarding)"' ;;
+    sshtest) printf '%s' 'sshd -t 2>&1; printf "\nrc=%s\n" "$?"' ;;
+    time) printf '%s' 'date; echo; timedatectl 2>/dev/null; echo; hwclock --show 2>/dev/null' ;;
+    ntp) printf '%s' 'timedatectl 2>/dev/null; echo; chronyc tracking 2>/dev/null || ntpq -p 2>/dev/null' ;;
+    sysctl) printf '%s' 'sysctl -a 2>/dev/null' ;;
+    boot) printf '%s' 'uname -a; echo; cat /etc/redhat-release 2>/dev/null; echo; grubby --info=ALL 2>/dev/null | head -n 80' ;;
+    logs) printf '%s' 'journalctl -n 120 --no-pager 2>/dev/null; echo; tail -n 120 /var/log/messages 2>/dev/null' ;;
+    hardware) printf '%s' 'lscpu; echo; lsmem 2>/dev/null; echo; dmidecode -t system -t bios 2>/dev/null; echo; lspci; echo; lsblk' ;;
+  esac
+}
+
+batch_pkg_search() {
+  local term
+  pkg_backend >/dev/null || { ui_error "Pacotes" "dnf/yum nao encontrado no host local."; return 1; }
+  term=$(ask "Buscar pacote" "Termo de busca:") || return 1
+  [[ $term =~ ^[A-Za-z0-9] ]] || { ui_error "Busca invalida" "O termo deve iniciar com letra ou numero."; return 1; }
+  batch_readonly_dispatch "Buscar pacote" "if command -v dnf >/dev/null 2>&1; then dnf search $(q "$term"); else yum search $(q "$term"); fi" 0 "Somente leitura: busca remota."
+}
+
+batch_pkg_info() {
+  local name
+  pkg_backend >/dev/null || { ui_error "Pacotes" "dnf/yum nao encontrado no host local."; return 1; }
+  name=$(ask "Informacoes do pacote" "Nome do pacote:") || return 1
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._+:-]*$ ]] || { ui_error "Nome invalido" "Informe um nome de pacote valido."; return 1; }
+  batch_readonly_dispatch "Consultar pacote" "if command -v dnf >/dev/null 2>&1; then dnf info $(q "$name"); else yum info $(q "$name"); fi" 0 "Somente leitura: informacoes remotas."
+}
+
+batch_test_connectivity() {
+  local host port cmds
+  host=$(ask "Teste de conectividade" "Host ou IPv4 de destino:") || return 1
+  valid_host "$host" || { ui_error "Destino invalido" "Informe um IPv4 ou hostname valido."; return 1; }
+  port=$(ask "Teste de conectividade" "Porta TCP (opcional, 1-65535):") || return 1
+  if [[ -n $port ]]; then
+    [[ $port =~ ^[0-9]+$ ]] && ((10#$port >= 1 && 10#$port <= 65535)) || { ui_error "Porta invalida" "Informe uma porta entre 1 e 65535."; return 1; }
+  fi
+  cmds="ping -c 2 -W 2 $(q "$host")"
+  [[ -n $port ]] && cmds+=$'\n'"timeout 5 bash -c $(q "echo > /dev/tcp/$host/$port")"
+  batch_readonly_dispatch "Testar conectividade" "$cmds" 0 "Somente leitura: ping e teste TCP."
+}
+
 batch_patch() {
   local remote
   remote='if command -v dnf >/dev/null 2>&1; then dnf -y update; elif command -v yum >/dev/null 2>&1; then yum -y update; else echo "dnf/yum ausente"; exit 127; fi'
@@ -2322,6 +2429,7 @@ batch_exec_menu() {
       4 "Coletar diagnostico (somente leitura)" \
       5 "! Executar comando personalizado (destrutivo em varios hosts)" \
       6 "Abrir SSH interativo em TMUX (interativo)" \
+      7 "Espelhar todas as acoes do painel (abre menu)" \
       0 "Voltar") || return 0
     case $c in
       1) batch_patch ;;
@@ -2330,6 +2438,160 @@ batch_exec_menu() {
       4) batch_diag ;;
       5) batch_custom ;;
       6) batch_interactive ;;
+      7) batch_mirror_menu ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
+batch_mirror_menu() {
+  local c
+  while :; do
+    c=$(show_menu "Espelhar painel em lote" "Cada acao coleta parametros no host local e executa os comandos equivalentes nos hosts remotos via TMUX." \
+      1 "STORAGE: consultar LVM e filesystems (somente leitura)" \
+      2 "STORAGE: consultar discos e particoes (somente leitura)" \
+      3 "STORAGE: consultar multipath e HBAs (somente leitura)" \
+      4 "STORAGE: consultar uso de filesystems (somente leitura)" \
+      5 "STORAGE: consultar swap (somente leitura)" \
+      6 "STORAGE: ! criar PV (destrutivo)" \
+      7 "STORAGE: criar VG (modifica)" \
+      8 "STORAGE: criar LV (modifica)" \
+      9 "STORAGE: ampliar LV e filesystem (modifica)" \
+      10 "STORAGE: criar filesystem em LV (modifica)" \
+      11 "STORAGE: montar filesystem e gravar fstab (modifica)" \
+      12 "STORAGE: ativar swap (modifica)" \
+      13 "STORAGE: ! desmontar filesystem e remover fstab (destrutivo)" \
+      14 "STORAGE: ! excluir LV (destrutivo)" \
+      15 "STORAGE: ! desativar swap (destrutivo)" \
+      16 "STORAGE: reescanear SCSI/FC (modifica)" \
+      17 "REDE: consultar interfaces e enderecos (somente leitura)" \
+      18 "REDE: testar conectividade (somente leitura)" \
+      19 "REDE: consultar rotas, DNS e ARP (somente leitura)" \
+      20 "REDE: ! alterar IPv4 (modifica; pode afetar SSH)" \
+      21 "REDE: ! configurar heartbeat (modifica; pode afetar SSH)" \
+      22 "REDE: ! alterar para DHCP (modifica; pode afetar SSH)" \
+      23 "REDE: definir hostname e /etc/hosts (modifica)" \
+      24 "USERS: consultar usuarios, UID, GID e grupos (somente leitura)" \
+      25 "USERS: consultar grupos, GID e membros (somente leitura)" \
+      26 "USERS: consultar logins e ultimos acessos (somente leitura)" \
+      27 "USERS: criar usuario (modifica)" \
+      28 "USERS: forcar troca de senha (modifica)" \
+      29 "USERS: adicionar usuario a grupo (modifica)" \
+      30 "USERS: bloquear/desbloquear conta (abre opcoes)" \
+      31 "USERS: criar grupo (modifica)" \
+      32 "USERS: ! excluir usuario (destrutivo)" \
+      33 "USERS: ! excluir grupo (destrutivo)" \
+      34 "SERVICES: consultar servicos essenciais (somente leitura)" \
+      35 "SERVICES: consultar servicos com falha (somente leitura)" \
+      36 "SERVICES: consultar processos por CPU/memoria (somente leitura)" \
+      37 "SERVICES: consultar cron e timers (somente leitura)" \
+      38 "SERVICES: gerenciar servico (abre opcoes)" \
+      39 "SERVICES: ! encerrar processo (destrutivo)" \
+      40 "PACKAGES: consultar repositorios (somente leitura)" \
+      41 "PACKAGES: consultar atualizacoes (somente leitura)" \
+      42 "PACKAGES: consultar historico (somente leitura)" \
+      43 "PACKAGES: buscar pacote (somente leitura)" \
+      44 "PACKAGES: consultar informacoes de pacote (somente leitura)" \
+      45 "PACKAGES: consultar Subscription Manager (somente leitura)" \
+      46 "PACKAGES: instalar pacote (modifica)" \
+      47 "PACKAGES: ! atualizar todos (modifica; pode exigir reboot)" \
+      48 "PACKAGES: ! aplicar atualizacoes de seguranca (modifica)" \
+      49 "PACKAGES: ! remover pacote (destrutivo)" \
+      50 "SECURITY: consultar firewall (somente leitura)" \
+      51 "SECURITY: consultar SELinux (somente leitura)" \
+      52 "SECURITY: consultar negacoes SELinux (somente leitura)" \
+      53 "SECURITY: auditar configuracao SSH (somente leitura)" \
+      54 "SECURITY: testar configuracao SSH (somente leitura)" \
+      55 "SECURITY: alterar firewall (abre opcoes)" \
+      56 "SECURITY: ! alterar modo SELinux (destrutivo)" \
+      57 "SECURITY: alterar booleano SELinux (modifica)" \
+      58 "SYSTEM: consultar data, hora e timezone (somente leitura)" \
+      59 "SYSTEM: consultar NTP/chrony (somente leitura)" \
+      60 "SYSTEM: consultar sysctl (somente leitura)" \
+      61 "SYSTEM: consultar boot e kernel (somente leitura)" \
+      62 "SYSTEM: alterar timezone (modifica)" \
+      63 "SYSTEM: alterar NTP (abre opcoes)" \
+      64 "SYSTEM: ! aplicar sysctl (modifica)" \
+      65 "SYSTEM: ! reiniciar servidor (destrutivo)" \
+      66 "SYSTEM: ! desligar servidor (destrutivo)" \
+      67 "SYSTEM: cancelar shutdown (modifica)" \
+      68 "DIAG: resumo de CPU, memoria, disco e uptime (somente leitura)" \
+      69 "DIAG: logs recentes do sistema (somente leitura)" \
+      70 "DIAG: inventario de hardware (somente leitura)" \
+      71 "USERS: definir senha (interativo; abre SSH TMUX)" \
+      0 "Voltar") || return 0
+    case $c in
+      1) batch_readonly_dispatch "Consultar LVM e filesystems" "$(batch_readonly_cmd lvm)" 0 "Somente leitura." ;;
+      2) batch_readonly_dispatch "Consultar discos e particoes" "$(batch_readonly_cmd disks)" 0 "Somente leitura." ;;
+      3) batch_readonly_dispatch "Consultar multipath e HBAs" "$(batch_readonly_cmd storage_health)" 0 "Somente leitura." ;;
+      4) batch_readonly_dispatch "Consultar uso de filesystems" "$(batch_readonly_cmd fsusage)" 0 "Somente leitura." ;;
+      5) batch_readonly_dispatch "Consultar swap" "$(batch_readonly_cmd swap)" 0 "Somente leitura." ;;
+      6) batch_capture_action "Criar PV" 1 1 create_pv ;;
+      7) batch_capture_action "Criar VG" 1 0 create_vg ;;
+      8) batch_capture_action "Criar LV" 1 0 create_lv ;;
+      9) batch_capture_action "Ampliar LV e filesystem" 1 0 extend_lv ;;
+      10) batch_capture_action "Criar filesystem em LV" 1 0 create_fs_lv ;;
+      11) batch_capture_action "Montar filesystem e fstab" 1 0 mount_fs ;;
+      12) batch_capture_action "Ativar swap" 1 0 swap_toggle on ;;
+      13) batch_capture_action "Desmontar filesystem e remover fstab" 1 1 unmount_fs ;;
+      14) batch_capture_action "Excluir LV" 1 1 delete_lv ;;
+      15) batch_capture_action "Desativar swap" 1 1 swap_toggle off ;;
+      16) batch_capture_action "Reescanear SCSI/FC" 1 0 rescan_storage ;;
+      17) batch_readonly_dispatch "Consultar interfaces e enderecos" "$(batch_readonly_cmd netif)" 0 "Somente leitura." ;;
+      18) batch_test_connectivity ;;
+      19) batch_readonly_dispatch "Consultar rotas, DNS e ARP" "$(batch_readonly_cmd netdetails)" 0 "Somente leitura." ;;
+      20) batch_capture_action "Alterar IPv4" 1 1 configure_network full ;;
+      21) batch_capture_action "Configurar heartbeat" 1 1 configure_network heartbeat ;;
+      22) batch_capture_action "Alterar para DHCP" 1 1 configure_dhcp ;;
+      23) batch_capture_action "Definir hostname e /etc/hosts" 1 0 configure_hostname ;;
+      24) batch_readonly_dispatch "Consultar usuarios e grupos" "$(batch_readonly_cmd users)" 0 "Somente leitura." ;;
+      25) batch_readonly_dispatch "Consultar grupos e membros" "$(batch_readonly_cmd groups)" 0 "Somente leitura." ;;
+      26) batch_readonly_dispatch "Consultar logins e acessos" "$(batch_readonly_cmd logins)" 0 "Somente leitura." ;;
+      27) batch_capture_action "Criar usuario" 1 0 create_user ;;
+      28) batch_capture_action "Forcar troca de senha" 1 0 user_expire_password ;;
+      29) batch_capture_action "Adicionar usuario a grupo" 1 0 user_add_group ;;
+      30) batch_capture_action "Bloquear/desbloquear conta" 1 0 user_lock_toggle ;;
+      31) batch_capture_action "Criar grupo" 1 0 create_group ;;
+      32) batch_capture_action "Excluir usuario" 1 1 delete_user ;;
+      33) batch_capture_action "Excluir grupo" 1 1 delete_group ;;
+      34) batch_readonly_dispatch "Consultar servicos essenciais" "$(batch_readonly_cmd services)" 0 "Somente leitura." ;;
+      35) batch_readonly_dispatch "Consultar servicos com falha" "$(batch_readonly_cmd failed)" 0 "Somente leitura." ;;
+      36) batch_readonly_dispatch "Consultar processos por CPU/memoria" "$(batch_readonly_cmd top)" 0 "Somente leitura." ;;
+      37) batch_readonly_dispatch "Consultar cron e timers" "$(batch_readonly_cmd cron)" 0 "Somente leitura." ;;
+      38) batch_capture_action "Gerenciar servico" 1 0 manage_service ;;
+      39) batch_capture_action "Encerrar processo" 1 1 kill_process ;;
+      40) batch_readonly_dispatch "Consultar repositorios" "$(batch_readonly_cmd repos)" 0 "Somente leitura." ;;
+      41) batch_readonly_dispatch "Consultar atualizacoes" "$(batch_readonly_cmd updates)" 0 "Somente leitura." ;;
+      42) batch_readonly_dispatch "Consultar historico de pacotes" "$(batch_readonly_cmd pkghistory)" 0 "Somente leitura." ;;
+      43) batch_pkg_search ;;
+      44) batch_pkg_info ;;
+      45) batch_readonly_dispatch "Consultar Subscription Manager" "$(batch_readonly_cmd subscription)" 0 "Somente leitura." ;;
+      46) batch_capture_action "Instalar pacote" 1 0 pkg_install ;;
+      47) batch_capture_action "Atualizar todos os pacotes" 1 1 pkg_update_all ;;
+      48) batch_capture_action "Aplicar atualizacoes de seguranca" 1 1 pkg_security ;;
+      49) batch_capture_action "Remover pacote" 1 1 pkg_remove ;;
+      50) batch_readonly_dispatch "Consultar firewall" "$(batch_readonly_cmd firewall)" 1 "Somente leitura; pode exigir root." ;;
+      51) batch_readonly_dispatch "Consultar SELinux" "$(batch_readonly_cmd selinux)" 0 "Somente leitura." ;;
+      52) batch_readonly_dispatch "Consultar negacoes SELinux" "$(batch_readonly_cmd denials)" 1 "Somente leitura; pode exigir root." ;;
+      53) batch_readonly_dispatch "Auditar configuracao SSH" "$(batch_readonly_cmd sshaudit)" 1 "Somente leitura; pode exigir root." ;;
+      54) batch_readonly_dispatch "Testar configuracao SSH" "$(batch_readonly_cmd sshtest)" 1 "Somente leitura; pode exigir root." ;;
+      55) batch_capture_action "Alterar firewall" 1 0 firewall_change ;;
+      56) batch_capture_action "Alterar modo SELinux" 1 1 selinux_mode ;;
+      57) batch_capture_action "Alterar booleano SELinux" 1 0 selinux_booleans ;;
+      58) batch_readonly_dispatch "Consultar data, hora e timezone" "$(batch_readonly_cmd time)" 0 "Somente leitura." ;;
+      59) batch_readonly_dispatch "Consultar NTP/chrony" "$(batch_readonly_cmd ntp)" 0 "Somente leitura." ;;
+      60) batch_readonly_dispatch "Consultar sysctl" "$(batch_readonly_cmd sysctl)" 0 "Somente leitura." ;;
+      61) batch_readonly_dispatch "Consultar boot e kernel" "$(batch_readonly_cmd boot)" 1 "Somente leitura; pode exigir root." ;;
+      62) batch_capture_action "Alterar timezone" 1 0 timezone_change ;;
+      63) batch_capture_action "Alterar NTP" 1 0 ntp_toggle ;;
+      64) batch_capture_action "Aplicar sysctl" 1 1 sysctl_set ;;
+      65) batch_capture_action "Reiniciar servidor" 1 1 reboot_system ;;
+      66) batch_capture_action "Desligar servidor" 1 1 shutdown_system ;;
+      67) batch_capture_action "Cancelar shutdown" 1 0 cancel_shutdown ;;
+      68) batch_diag ;;
+      69) batch_readonly_dispatch "Consultar logs recentes" "$(batch_readonly_cmd logs)" 1 "Somente leitura; pode exigir root." ;;
+      70) batch_readonly_dispatch "Consultar hardware" "$(batch_readonly_cmd hardware)" 1 "Somente leitura; pode exigir root." ;;
+      71) batch_interactive ;;
       0) return 0 ;;
     esac
   done
@@ -2841,6 +3103,9 @@ help_text() {
     "" \
     "BATCH / TMUX" \
     "  Inventario: $BATCH_FILE" \
+    "  Espelhar painel: todas as acoes locais viram comandos remotos via TMUX." \
+    "  O espelho usa parametros/validacao do host local; use nomes iguais nos remotos." \
+    "  Senha: use a opcao interativa do espelho; nao envie senha em comando." \
     "  Formato: [usuario@]host[:porta], um por linha." \
     "  SSH local: $BATCH_SSH_USER. Acoes root remotas usam sudo -n (NOPASSWD)." \
     "  BatchMode exige host key em known_hosts; use Testar SSH + sudo -n." \
@@ -2989,6 +3254,10 @@ create_user() {
 }
 
 run_tty_cmd() {
+  if ((CAPTURE_MODE)); then
+    ui_error "Batch" "Acao interativa nao suportada em lote."
+    return 1
+  fi
   local preview rc
   preview=$(printf '%q ' "$@")
   clear
@@ -3272,6 +3541,7 @@ manage_service() {
     fi
     confirm_exec "Consultar status de $svc" "$(cmd_line "${c[@]}")" \
       "Somente leitura: estado do servico, sem alteracao." || return 0
+    if ((CAPTURE_MODE)); then CAPTURE_CMDS+=$(cmd_line "${c[@]}")$'\n'; return 0; fi
     show_text "Status - $svc" "$("${c[@]}" 2>&1)"
     return 0
   fi
@@ -3280,12 +3550,14 @@ manage_service() {
       c=(timeout 10 journalctl -u "$svc" -n 120 --no-pager)
       confirm_exec "Consultar logs de $svc" "$(cmd_line "${c[@]}")" \
         "Somente leitura: ultimas linhas de log." || return 0
+      if ((CAPTURE_MODE)); then CAPTURE_CMDS+=$(cmd_line "${c[@]}")$'\n'; return 0; fi
       show_text "Logs - $svc" "$("${c[@]}" 2>&1)"
     else
       local logcmd
       logcmd="timeout 10 grep -i $(q "$svc") /var/log/messages 2>/dev/null | tail -n 120"
       confirm_exec "Consultar logs de $svc" "$logcmd" \
         "Somente leitura: ultimas linhas de log." || return 0
+      if ((CAPTURE_MODE)); then CAPTURE_CMDS+=$logcmd$'\n'; return 0; fi
       show_text "Logs - $svc" "$(timeout 10 grep -i "$svc" /var/log/messages 2>/dev/null | tail -n 120)"
     fi
     return 0
@@ -4210,7 +4482,7 @@ coverage_text() {
     "- Seguranca: firewall, SELinux (modo/booleanos/AVC) e auditoria/teste SSH." \
     "- Sistema: data/hora/timezone, NTP, sysctl, boot/kernel, reboot/shutdown/cancelamento." \
     "- Diagnostico: resumo, servicos, rede, logs, hardware e auditoria do painel." \
-    "- Lote/TMUX: inventario, teste SSH/sudo, patch, security, reboot, diagnostico, comando e relatorio." \
+    "- Lote/TMUX: inventario, teste SSH/sudo, patch, security, reboot, diagnostico, comando, relatorio e espelho de todas as acoes locais." \
     "" \
     "FALLBACK PARA QUALQUER OPERACAO ROOT" \
     "- Comando root assistido: executa qualquer comando como root, com comando exato, SIM e auditoria." \
