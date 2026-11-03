@@ -151,6 +151,17 @@ init_theme() {
   export NEWT_COLORS='root=white,black;roottext=white,black;window=white,black;border=white,black;shadow=black,black;title=yellow,black;button=black,lightgray;actbutton=black,cyan;compactbutton=white,black;textbox=white,black;acttextbox=white,black;entry=white,black;label=white,black;listbox=white,black;actlistbox=black,cyan;sellistbox=white,black;actsellistbox=black,cyan;checkbox=white,black;actcheckbox=black,cyan;helpline=white,black;emptyscale=,black;fullscale=,cyan;disentry=gray,black'
 }
 
+whiptail() {
+  local rc pid
+  command whiptail "$@" &
+  pid=$!
+  trap 'kill -KILL "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; emergency_exit INT' INT
+  wait "$pid"
+  rc=$?
+  trap 'emergency_exit INT' INT
+  return "$rc"
+}
+
 ui_footer() {
   printf 'operador %s  |  %s' "${LOG_USER:-$(id -un)}" "$(date '+%H:%M')"
 }
@@ -4369,7 +4380,7 @@ main_menu() {
 
 main() {
   [[ ${EUID:-$(id -u)} -eq 0 ]] || die "Execute como root: sudo ./$SELF"
-  command -v whiptail >/dev/null 2>&1 || die "whiptail nao encontrado. Instale o pacote newt."
+  type -P whiptail >/dev/null 2>&1 || die "whiptail nao encontrado. Instale o pacote newt."
   TMP_DIR=$(mktemp -d /tmp/rhel_admin_manager.XXXXXX) || die "Nao foi possivel criar diretorio temporario."
   trap 'rm -rf "$TMP_DIR"' EXIT
   trap 'emergency_exit INT' INT
